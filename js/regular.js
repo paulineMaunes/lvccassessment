@@ -735,7 +735,6 @@ const Regular = {
       <div class="cc-blanks-list mt-1">
         ${blanks.map((b,i)=>`<div class="cc-blank-row">Blank ${i+1}: <code>${escapeHtml(b.text||'')}</code></div>`).join('') || '<span class="text-muted">No blanks yet</span>'}
       </div>
-      <button type="button" class="btn btn-sm btn-ghost mt-1" data-remove-q="${index}">Remove question</button>
     </div>`;
   },
 
@@ -801,6 +800,7 @@ const Regular = {
   },
 
   renderBuilderMatch(q, index) {
+
     const left = q.left || ['', ''];
     const right = q.right || ['', ''];
     const correct = Array.isArray(q.correct) ? q.correct : left.map((_, i) => i);
@@ -829,6 +829,16 @@ const Regular = {
         </label>
       </div>
       <p class="text-muted" style="font-size:0.8rem">1 point per correct pair by default. Set answer key below.</p>
+      <div class="points-row" style="display:flex;flex-wrap:wrap;gap:0.75rem;align-items:center;margin-bottom:0.5rem">
+        <label>Points mode
+          <select class="form-control" data-match-points-mode="${index}" style="width:auto;display:inline-block">
+            <option value="all" ${(q.pointsMode!=='each')?'selected':''}>Full points if all matches correct</option>
+            <option value="each" ${q.pointsMode==='each'?'selected':''}>Points per correct match</option>
+          </select>
+        </label>
+        <label>Per match <input type="number" min="0" step="0.5" class="form-control" data-match-per="${index}" value="${q.pointsPerItem ?? 1}" style="width:70px;display:inline-block"/></label>
+        <label>Total <input type="number" min="0" step="0.5" class="form-control" data-points="${index}" value="${q.points ?? 1}" style="width:70px;display:inline-block"/></label>
+      </div>
       <div class="match-cfg-cols">
         <div><strong>Column A</strong>${leftRows}
           <button type="button" class="btn btn-sm btn-ghost" data-match-add-left="${index}">+ Add A</button></div>

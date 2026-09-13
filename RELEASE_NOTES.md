@@ -600,3 +600,12 @@ If features seem missing, replace **all** app files from the zip (not only one J
 
 ## Ops note
 - Trigger Email: collection must be `mail` (not an email address). FROM = instructor email.
+
+## v1.5.68
+- Reopen: New Session / Reopen Previous / Cancel; Reopen Previous student picker works
+- Complete the Code: single Remove question
+- Live right panel 100svh: Integrity on top, Messages below
+- Results: View summary, Re-evaluate (editable points), Export PDF; full-width grid
+- Mobile: MC/long text wraps, no cut-off; complete-code readable; categorize images 80%
+- Match: wider columns; points all vs per match
+- Section test: no fullscreen; table fill scroll to new row

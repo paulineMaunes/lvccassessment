@@ -210,18 +210,18 @@ const Dashboard = {
             <div class="empty-state">Waiting for students...</div>
           </div>
         </div>
-        <aside class="integrity-panel integrity-panel-fixed" id="integrity-panel">
+        <aside class="integrity-panel integrity-panel-fixed live-right-panel" id="integrity-panel">
           <div class="integrity-panel-head">
             <button type="button" class="btn btn-sm btn-danger" id="btn-pause-integrity" title="Stop recording integrity issues for this live session">Stop integrity log</button>
+            <strong>Integrity issues</strong>
+            <input type="search" id="integrity-filter" class="form-control" placeholder="Filter name, email..." />
+          </div>
+          <div id="integrity-list" class="integrity-list integrity-list-flex"><p class="text-muted">No events yet.</p></div>
+          <div class="integrity-panel-head" style="margin-top:0.35rem;border-top:1px solid var(--border);padding-top:0.5rem">
             <strong>Messages</strong>
             <span class="text-muted" style="font-size:0.75rem">Latest first · unread ●</span>
           </div>
           <div id="live-msg-list" class="live-msg-list integrity-list"><p class="text-muted">No student messages yet.</p></div>
-          <div class="integrity-panel-head" style="margin-top:0.5rem;border-top:1px solid var(--border);padding-top:0.5rem">
-            <strong>Integrity issues</strong>
-            <input type="search" id="integrity-filter" class="form-control" placeholder="Filter name, email..." />
-          </div>
-          <div id="integrity-list" class="integrity-list"><p class="text-muted">No events yet.</p></div>
         </aside>
       </div>
     `;
