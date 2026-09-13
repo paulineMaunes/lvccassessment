@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LVCC Assessment Portal</title>
+  <link rel="icon" type="image/png" href="assets/lvcc-logo.png" />
+  <link rel="shortcut icon" type="image/png" href="assets/lvcc-logo.png" />
+  <link rel="apple-touch-icon" href="assets/lvcc-logo.png" />
+  <script>
+    try {
+      var t = localStorage.getItem('lvcc_theme') || 'light';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  </script>
+  <link rel="stylesheet" href="css/styles.css?v=217" />
+  <!-- Retro font: swap so text shows immediately with fallback -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
+</head>
+<body>
+  <div id="app">
+    <div id="loading" class="loading-screen">
+      <div class="spinner"></div>
+      <p>Loading LVCC Assessment Portal...</p>
+    </div>
+  </div>
+
+  <!-- Firebase (required) -->
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage-compat.js"></script>
+
+  <!-- jsPDF local first -->
+  <script src="js/vendor/jspdf.umd.min.js"></script>
+
+  <!-- App scripts -->
+  <script src="js/firebase-config.js?v=217"></script>
+  <script src="js/ui.js?v=217"></script>
+  <script src="js/theme.js?v=217"></script>
+  <script src="js/auth.js?v=217"></script>
+  <script src="js/exam.js?v=217"></script>
+  <script src="js/regular.js?v=217"></script>
+  <script src="js/monitor.js?v=217"></script>
+  <script src="js/editor.js?v=217"></script>
+  <script src="js/dashboard.js?v=217"></script>
+  <script src="js/notifications.js?v=217"></script>
+  <script src="js/app.js?v=217"></script>
+
+  <!-- Heavy libs deferred — not needed for first paint / login -->
+  <script>
+    window.addEventListener('load', function () {
+      setTimeout(function () {
+        var s1 = document.createElement('script');
+        s1.src = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.0/min/vs/loader.min.js';
+        s1.async = true;
+        document.body.appendChild(s1);
+        var s2 = document.createElement('script');
+        s2.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+        s2.async = true;
+        document.body.appendChild(s2);
+      }, 1500);
+    });
+  </script>
+</body>
+</html>

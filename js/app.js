@@ -1,0 +1,8021 @@
+/**
+ * LVCC Assessment Portal — Main App
+ * v1.5.67
+ */
+
+const App = {
+
+  /** Public portal URL for links/QR in emails (set once in Settings or auto-detect) */
+  async appendSessionChat(sessionId, from, text) {
+    const entry = {
+      id: 'm_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      from, // 'student' | 'instructor'
+      text: String(text || '').trim(),
+      at: Date.now(),
+      readByInstructor: from === 'instructor'
+    };
+    if (!entry.text || !sessionId) return;
+    const payload = {
+      chatHistory: firebase.firestore.FieldValue.arrayUnion(entry),
+      chatPing: Date.now()
+    };
+    if (from === 'student') {
+      payload.lastStudentMessage = entry.text;
+      payload.lastStudentMessageAt = firebase.firestore.FieldValue.serverTimestamp();
+      payload.msgReadByInstructor = false;
+    } else {
+      payload.lastInstructorMessage = entry.text;
+      payload.instructorReply = entry.text;
+      payload.lastInstructorMessageAt = firebase.firestore.FieldValue.serverTimestamp();
+    }
+    await window.db.collection('sessions').doc(sessionId).update(payload);
+  },
+
+  getPortalBaseUrl() {
+    try {
+      const saved = localStorage.getItem('lvcc_portal_url');
+      if (saved && /^https?:\/\//i.test(saved)) return saved.replace(/\/$/, '');
+    } catch (_) {}
+    try {
+      const o = (window.location.origin || '').replace(/\/$/, '');
+      if (o && !/github\.io/i.test(o)) return o;
+    } catch (_) {}
+    return 'https://lvccassessmentportal.vercel.app';
+  },
+
+  EMAIL_TEMPLATES: {
+    quota_retake: {
+      id: 'quota_retake',
+      label: 'Retake — answers not saved (system limit)',
+      subject: (t) => `[LVCC] Retake required: ${t}`,
+      blurb: 'Your previous attempt may not have been fully recorded due to a system limit. Please retake the assessment so your score is accurate.'
+    },
+    failed_retake: {
+      id: 'failed_retake',
+      label: 'Retake — did not meet the required score',
+      subject: (t) => `[LVCC] Retake required: ${t}`,
+      blurb: 'Your instructor is asking you to retake this assessment because the previous result did not meet the required standard.'
+    },
+    unattempted_retake: {
+      id: 'unattempted_retake',
+      label: 'Retake — many items left blank',
+      subject: (t) => `[LVCC] Complete / retake: ${t}`,
+      blurb: 'Many items were left unattempted. Your instructor asks you to retake (or continue, if allowed) so your result is complete.'
+    },
+    instructor_retake: {
+      id: 'instructor_retake',
+      label: 'Retake — requested by instructor',
+      subject: (t) => `[LVCC] Please retake: ${t}`,
+      blurb: 'Your instructor is requesting that you retake this assessment.'
+    },
+    continue_progress: {
+      id: 'continue_progress',
+      label: 'Continue — resume saved progress',
+      subject: (t) => `[LVCC] Continue your assessment: ${t}`,
+      blurb: 'You may return to the assessment and continue with your saved progress. Use the code or button below.'
+    }
+  },
+
+  buildAssessmentEmailHtml({ studentName, examTitle, code, blurb, portalUrl, instructorName, instructorEmail }) {
+    const codeDisp = String(code || '').replace(/(\d{4})(\d{4})/, '$1-$2');
+    const joinUrl = portalUrl + (portalUrl.includes('?') ? '&' : '/?') + 'code=' + encodeURIComponent(String(code || '').replace(/\D/g, ''));
+    const qr = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(joinUrl);
+    return `
+<!DOCTYPE html><html><body style="font-family:Segoe UI,Arial,sans-serif;line-height:1.5;color:#0f172a;background:#f8fafc;padding:24px">
+  <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:12px;padding:28px;border:1px solid #e2e8f0">
+    <h2 style="margin:0 0 8px;color:#1e3a5f">LVCC Assessment Portal</h2>
+    <p style="color:#64748b;margin:0 0 20px">Integrity — We live with honesty, truthfulness, and moral courage.</p>
+    <p>Hello ${this._esc(studentName || 'Student')},</p>
+    <p>${this._esc(blurb)}</p>
+    <p><strong>Assessment:</strong> ${this._esc(examTitle || '')}</p>
+    <p style="font-size:1.25rem"><strong>Code:</strong> <span style="letter-spacing:0.05em">${this._esc(codeDisp)}</span></p>
+    <p style="margin:28px 0">
+      <a href="${this._esc(joinUrl)}" style="background:#387EC3;color:#fff;padding:14px 22px;text-decoration:none;border-radius:8px;font-weight:600;display:inline-block">Open assessment</a>
+    </p>
+    <p style="color:#64748b;font-size:0.9rem">Or scan this QR code:</p>
+    <p><img src="${qr}" width="180" height="180" alt="QR code" /></p>
+    <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0" />
+    <p style="font-size:0.85rem;color:#64748b">From: ${this._esc(instructorName || instructorEmail || 'Instructor')}<br/>
+    ${instructorEmail ? 'Reply to: ' + this._esc(instructorEmail) : ''}</p>
+  </div>
+</body></html>`;
+  },
+
+  _esc(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  },
+
+  /**
+   * Queue email via Firestore `mail` collection (Firebase Trigger Email extension).
+   * From = instructor email. No custom assessmentportal@ mailbox required.
+   */
+  async queueStudentEmail({ to, templateId, examTitle, code, studentName }) {
+    const tpl = this.EMAIL_TEMPLATES[templateId] || this.EMAIL_TEMPLATES.instructor_retake;
+    const instructorEmail = (Auth.userProfile && Auth.userProfile.email) || (Auth.currentUser && Auth.currentUser.email) || '';
+    const instructorName = (Auth.userProfile && Auth.userProfile.name) || instructorEmail;
+    const portalUrl = this.getPortalBaseUrl();
+    const html = this.buildAssessmentEmailHtml({
+      studentName, examTitle, code, blurb: tpl.blurb, portalUrl, instructorName, instructorEmail
+    });
+    const subject = typeof tpl.subject === 'function' ? tpl.subject(examTitle || 'Assessment') : `[LVCC] ${examTitle || 'Assessment'}`;
+    const doc = {
+      to: [String(to).trim().toLowerCase()],
+      from: instructorEmail || undefined,
+      replyTo: instructorEmail || undefined,
+      message: { subject, html },
+      templateId: tpl.id,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      createdBy: Auth.currentUser && Auth.currentUser.uid
+    };
+    await window.db.collection('mail').add(doc);
+    return doc;
+  },
+
+  async pickEmailTemplate() {
+    return new Promise((resolve) => {
+      const root = document.getElementById('ui-modal-root') || document.body;
+      const w = document.createElement('div');
+      w.className = 'modal-overlay ui-modal-overlay';
+      w.style.zIndex = '50000';
+      const opts = Object.values(this.EMAIL_TEMPLATES).map(t =>
+        `<label style="display:flex;gap:0.5rem;align-items:flex-start;padding:0.5rem 0;border-bottom:1px solid var(--border);cursor:pointer">
+          <input type="radio" name="em-tpl" value="${t.id}" ${t.id==='quota_retake'?'checked':''} />
+          <span><strong>${this._esc(t.label)}</strong><br/><span class="text-muted" style="font-size:0.85rem">${this._esc(t.blurb)}</span></span>
+        </label>`
+      ).join('');
+      w.innerHTML = `<div class="modal ui-modal" style="max-width:520px">
+        <h2>Email student</h2>
+        <p class="ui-modal-body">Choose a template. Sender will be <strong>your instructor email</strong> (via Firebase Trigger Email).</p>
+        <div style="max-height:50vh;overflow:auto">${opts}</div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" id="em-skip">Skip email</button>
+          <button type="button" class="btn btn-primary" id="em-send">Queue email</button>
+        </div>
+      </div>`;
+      root.appendChild(w);
+      w.querySelector('#em-skip').onclick = () => { w.remove(); resolve(null); };
+      w.querySelector('#em-send').onclick = () => {
+        const v = w.querySelector('input[name="em-tpl"]:checked')?.value || 'instructor_retake';
+        w.remove();
+        resolve(v);
+      };
+    });
+  },
+
+  shouldHideStudentResult(session) {
+    if (!session) return true;
+    if (session.status === 'active') return true;
+    if (session.submitReason === 'failed' || session.submitFailed) return true;
+    const max = Number(session.maxScore) || 0;
+    const sc = Number(session.score);
+    if (max > 0 && !isNaN(sc) && (sc / max) < 0.2) return true;
+    if (session.percent != null && Number(session.percent) < 20) return true;
+    return false;
+  },
+
+  async showInstructorSessionResult(sessionId) {
+    if (this.viewStudentResult) return this.viewStudentResult(sessionId);
+    if (this.openSessionResult) return this.openSessionResult(sessionId);
+    if (this.showAttemptDetail) return this.showAttemptDetail(sessionId);
+    await UI.alert('Open Results for this assessment, then use Grade / Export for that student.', 'Result');
+  },
+
+  clearExamQuery() {
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('exam');
+      window.history.replaceState({}, '', url.pathname + (url.search || '') + (url.hash || ''));
+    } catch (_) {
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  },
+
+  async init() {
+    Theme.init();
+    try { if (window.UI) UI.hideLoading(); } catch (_) {}
+    const loading = document.getElementById('loading');
+    // Hide splash as soon as JS runs — do not wait for network
+    try { loading?.classList.add('hidden'); } catch (_) {}
+    try {
+      const ok = await this.waitForFirebase(8000);
+      if (!ok) { this.showFirebaseLoadError(); return; }
+      if (!window.firebaseConfig || window.firebaseConfig.apiKey === 'YOUR_API_KEY') {
+        this.showConfigNeeded(); return;
+      }
+      const profile = await Auth.init();
+      if (profile) {
+        await Auth.checkPendingInstructor(Auth.currentUser);
+        await Auth.resolveProctorState(Auth.currentUser);
+        await Theme.loadFromProfile();
+        this.routeAfterLogin();
+      } else {
+        this.showLogin();
+      }
+    } catch (err) {
+      console.error(err);
+      this.showError(err.message || String(err));
+    } finally {
+      loading?.classList.add('hidden');
+      try { if (window.UI) UI.hideLoading(); } catch (_) {}
+    }
+  },
+
+  waitForFirebase(ms = 8000) {
+    return new Promise((resolve) => {
+      const start = Date.now();
+      const tick = () => {
+        if (typeof firebase !== 'undefined') {
+          resolve(!!(window.initFirebaseApp && window.initFirebaseApp() && window.auth));
+          return;
+        }
+        if (Date.now() - start > ms) { resolve(false); return; }
+        setTimeout(tick, 150);
+      };
+      tick();
+    });
+  },
+
+  showFirebaseLoadError() {
+    document.getElementById('app').innerHTML = `
+      <div class="auth-container" style="max-width:640px">
+        <h1>⚠️ Firebase SDK Failed to Load</h1>
+        <p>Disable ad-blockers, try Incognito, or another network.</p>
+        <button class="btn btn-primary" onclick="location.reload()">Try Again</button>
+      </div>`;
+  },
+
+  showConfigNeeded() {
+    document.getElementById('app').innerHTML = `
+      <div class="auth-container" style="max-width:640px">
+        <h1>⚙️ Firebase Setup Required</h1>
+        <p>Edit <code>js/firebase-config.js</code> with your project keys and SUPERADMIN_EMAILS.</p>
+      </div>`;
+  },
+
+  showLogin() {
+    document.getElementById('app').innerHTML = `
+      <div class="auth-container">
+        <img src="assets/lvcc-logo.png" alt="LVCC Logo" class="brand-logo" width="120" height="120" />
+        <h1>LVCC Assessment Portal</h1>
+        <p class="brand-subtitle">We live with honesty, truthfulness, and moral courage.</p>
+        <button class="google-btn" id="google-signin">
+          <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="" />
+          Sign in with Google
+        </button>
+        <p class="mt-2 text-muted" style="font-size:0.85rem;line-height:1.5">
+          Use <strong>@student.laverdad.edu.ph</strong> or <strong>@laverdad.edu.ph</strong>.<br>
+          Personal email is allowed only if invited to a specific exam.
+        </p>
+        <div id="login-error" class="hidden login-error"></div>
+        <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
+          <div class="app-version">Build v1.5.67</div>
+        </div>
+      </div>`;
+    document.getElementById('google-signin').onclick = async () => {
+      const errBox = document.getElementById('login-error');
+      errBox.classList.add('hidden');
+      try {
+        await Auth.signInWithGoogle();
+        if (Auth.currentUser) {
+          await Auth.checkPendingInstructor(Auth.currentUser);
+          await Auth.resolveProctorState(Auth.currentUser);
+        }
+        if (Auth.userProfile) {
+          await Theme.loadFromProfile();
+          this.routeAfterLogin();
+        }
+      } catch (err) {
+        errBox.textContent = err.message || 'Sign-in failed.';
+        errBox.classList.remove('hidden');
+      }
+    };
+  },
+
+  showAccessDeniedScreen(message) {
+    document.getElementById('app').innerHTML = `
+      <div class="auth-container" style="max-width:520px">
+        <h1>Access Denied</h1>
+        <p class="access-denied-msg">${escapeHtml(message)}</p>
+        <button class="btn btn-primary" onclick="App.showLogin()">Back to Sign In</button>
+      </div>`;
+  },
+
+  routeAfterLogin() {
+    try {
+      if (window.IdleGuard) {
+        const role0 = Auth.userProfile?.role;
+        const isStaff = role0 === 'superadmin' || role0 === 'teacher' || role0 === 'proctor';
+        if (window.IdleGuard) {
+          IdleGuard.idleMs = isStaff ? (10 * 60 * 1000) : (5 * 60 * 1000);
+        }
+        // Staff and students both use idle guard; staff = 10 min
+        if (!window._testMode) {
+          IdleGuard.start(async () => {
+            try {
+              if (document.getElementById('btn-builder-undo') || document.getElementById('exam-title')) {
+                App.saveAutosave && App.saveAutosave();
+                // best-effort cloud draft if editing
+                try {
+                  if (typeof App.saveAssessment === 'function' && document.getElementById('exam-title')) {
+                    await App.saveAssessment('draft', null, { silent: true }).catch(() => {});
+                  }
+                } catch (_) {}
+              }
+            } catch (_) {}
+            try { if (window.Monitor) document.documentElement.classList.remove('taking-exam');
+      document.body.classList.remove('taking-exam');
+      Monitor.stop(); } catch (_) {}
+            try { await Auth.signOut(); } catch (_) {}
+            location.reload();
+          });
+        } else {
+          IdleGuard.stop();
+        }
+      }
+    } catch (_) {}
+    const role = Auth.userProfile.role;
+    const params = new URLSearchParams(window.location.search);
+    const examId = params.get('exam');
+
+    if (examId && role !== 'proctor') {
+      const isTest = new URLSearchParams(window.location.search).get('test') === '1';
+      // Instructors may only open via test=1
+      this.startStudentExam(examId, { testMode: isTest });
+      return;
+    }
+    if (role === 'superadmin') this.showDashboard();
+    else if (role === 'teacher') this.showDashboard();
+    else if (role === 'proctor') this.showProctorHome();
+    else this.showDashboard(); // students land on dashboard (not join screen) after login/refresh
+  },
+
+  toggleMobileNav() {
+    document.getElementById('sidebar')?.classList.toggle('open');
+    document.getElementById('nav-backdrop')?.classList.toggle('open');
+  },
+
+  renderShell(contentHtml, activeNav = '') {
+    const role = Auth.userProfile.role;
+    const name = Auth.userProfile.name || Auth.userProfile.email || '';
+    const email = Auth.userProfile.email || '';
+    const photo = Auth.userProfile.photoURL || Auth.currentUser?.photoURL || '';
+    const initials = (name || email || '?').split(/\s+/).map(p => p[0]).join('').slice(0, 2).toUpperCase();
+
+    let navItems = '';
+    if (role === 'superadmin') {
+      navItems = `
+        <div class="nav-item ${activeNav==='dashboard'?'active':''}" title="Dashboard" onclick="App.showDashboard();App.closeNav()">
+          <span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg></span><span class="nav-label">Dashboard</span></div>
+        <div class="nav-item ${activeNav==='teachers'?'active':''}" title="Instructors" onclick="App.showSuperAdmin();App.closeNav()">
+          <span class="nav-ico" aria-hidden="true">◎</span><span class="nav-label">Instructors</span></div>
+        <div class="nav-item ${activeNav==='exams'?'active':''}" title="My Assessments" onclick="App.showInstructorHome();App.closeNav()">
+          <span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M12 6v8"/><path d="M8 10h8"/></svg></span><span class="nav-label">My Assessments</span></div>
+        <div class="nav-item ${activeNav==='sessions'?'active':''}" title="Sessions" onclick="App.showSessionsPage();App.closeNav()">
+          <span class="nav-ico" aria-hidden="true">▦</span><span class="nav-label">Sessions</span></div>`;
+    } else if (role === 'teacher') {
+      navItems = `
+        <div class="nav-item ${activeNav==='dashboard'?'active':''}" title="Dashboard" onclick="App.showDashboard();App.closeNav()">
+          <span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg></span><span class="nav-label">Dashboard</span></div>
+        <div class="nav-item ${activeNav==='exams'?'active':''}" title="My Assessments" onclick="App.showInstructorHome();App.closeNav()">
+          <span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M12 6v8"/><path d="M8 10h8"/></svg></span><span class="nav-label">My Assessments</span></div>
+        <div class="nav-item ${activeNav==='sessions'?'active':''}" title="Sessions" onclick="App.showSessionsPage();App.closeNav()">
+          <span class="nav-ico" aria-hidden="true">▦</span><span class="nav-label">Sessions</span></div>`;
+    } else if (role === 'proctor') {
+      navItems = `
+        <div class="nav-item ${activeNav==='dashboard'?'active':''}" title="Dashboard" onclick="App.showDashboard();App.closeNav()">
+          <span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg></span><span class="nav-label">Dashboard</span></div>
+        <div class="nav-item ${activeNav==='proctor'?'active':''}" title="Proctor" onclick="App.showProctorHome();App.closeNav()">
+          <span class="nav-ico" aria-hidden="true">◉</span><span>Proctor</span></div>`;
+    } else {
+      navItems = `
+        <div class="nav-item ${activeNav==='dashboard'?'active':''}" title="Dashboard" onclick="App.showDashboard();App.closeNav()">
+          <span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg></span><span class="nav-label">Dashboard</span></div>
+        <div class="nav-item ${activeNav==='history'?'active':''}" title="Assessments" onclick="App.showStudentHistory();App.closeNav()">
+          <span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M12 6v8"/><path d="M8 10h8"/></svg></span><span class="nav-label">Assessments</span></div>
+        <div class="nav-item ${activeNav==='mock'?'active':''}" title="Mock History" onclick="App.showMockHistory();App.closeNav()">
+          <span class="nav-ico" aria-hidden="true">◐</span><span class="nav-label">Mock History</span></div>`;
+    }
+
+    const avatar = photo
+      ? `<img class="user-avatar" src="${photo}" alt="" />`
+      : `<span class="user-avatar user-avatar-fallback">${escapeHtml(initials)}</span>`;
+
+    document.getElementById('app').innerHTML = `
+      <div class="shell ${document.body.classList.contains('nav-collapsed') ? 'nav-collapsed' : ''}">
+        <div id="nav-backdrop" class="nav-backdrop" onclick="App.closeNav()"></div>
+        <aside class="sidebar" id="sidebar">
+          <div class="sidebar-brand">
+            <button type="button" class="brand-toggle" onclick="App.toggleNav()" aria-label="Toggle menu">
+              <img src="assets/lvcc-logo.png" alt="LVCC" class="header-logo" width="36" height="36" />
+            </button>
+            <div class="brand-text">
+              <div class="logo-text">LVCC Assessment Portal</div>
+              <div class="app-version">v1.5.67</div>
+            </div>
+          </div>
+          <nav class="sidebar-nav">${navItems}</nav>
+          <div class="sidebar-user">
+            <button type="button" class="user-row" id="user-menu-btn" onclick="App.toggleUserPopover(event)">
+              ${avatar}
+              <div class="user-row-text">
+                <div class="user-row-name">${escapeHtml(name)} <span class="role-badge ${role}">${role}</span></div>
+                <div class="user-row-email">${escapeHtml(email)}</div>
+              </div>
+            </button>
+          </div>
+        </aside>
+        <div class="shell-main">
+          <header class="thin-bar">
+            <div class="logo" style="display:flex;align-items:center;gap:0.5rem">
+              <img src="assets/lvcc-logo.png" alt="LVCC" width="28" height="28" />
+              <span class="thin-bar-title">LVCC Assessment Portal</span>
+            </div>
+            <button type="button" class="mobile-avatar-btn thin-bar-right" onclick="App.toggleNav()" aria-label="Menu" id="mobile-menu-avatar"></button>
+          </header>
+          <main class="main-content" id="main-content">${contentHtml}</main>
+        </div>
+      </div>`;
+    // mobile avatar button
+    const mob = document.getElementById('mobile-menu-avatar');
+    if (mob) {
+      mob.innerHTML = photo
+        ? `<img class="user-avatar" src="${photo}" alt="" />`
+        : `<span class="user-avatar user-avatar-fallback">${escapeHtml(initials)}</span>`;
+    }
+  },
+
+  toggleNav() {
+    document.getElementById('user-popover')?.remove();
+    if (window.innerWidth > 900) {
+      document.querySelector('.shell')?.classList.toggle('nav-collapsed');
+      document.body.classList.toggle('nav-collapsed');
+    } else {
+      document.body.classList.toggle('nav-open');
+      document.querySelector('.shell')?.classList.toggle('nav-open');
+    }
+  },
+
+  closeNav() {
+    document.body.classList.remove('nav-open');
+    document.querySelector('.shell')?.classList.remove('nav-open');
+    document.getElementById('user-popover')?.remove();
+  },
+
+  toggleUserPopover(ev) {
+    ev?.stopPropagation?.();
+    const existing = document.getElementById('user-popover');
+    if (existing) { existing.remove(); return; }
+    const btn = document.getElementById('user-menu-btn');
+    const rect = btn?.getBoundingClientRect();
+    const pop = document.createElement('div');
+    pop.id = 'user-popover';
+    pop.className = 'user-popover';
+    pop.innerHTML = `
+      <button type="button" class="popover-item" id="pop-settings">Settings</button>
+      <button type="button" class="popover-item danger" id="pop-logout">Logout</button>`;
+    const closePop = () => { pop.remove(); this.closeNav(); };
+    pop.querySelector('#pop-settings')?.addEventListener('click', () => { closePop(); Theme.openSettings(); });
+    pop.querySelector('#pop-logout')?.addEventListener('click', () => { closePop(); this.logout(); });
+    setTimeout(() => {
+      const outside = (ev) => {
+        if (!pop.contains(ev.target) && ev.target.id !== 'user-menu-btn' && !ev.target.closest?.('#user-menu-btn')) {
+          pop.remove();
+          document.removeEventListener('click', outside, true);
+        }
+      };
+      document.addEventListener('click', outside, true);
+    }, 0);
+    if (rect) {
+      pop.style.position = 'fixed';
+      pop.style.left = Math.min(rect.left, window.innerWidth - 200) + 'px';
+      pop.style.bottom = (window.innerHeight - rect.top + 8) + 'px';
+    }
+    document.body.appendChild(pop);
+    setTimeout(() => {
+      const close = (e) => {
+        if (!pop.contains(e.target) && e.target !== btn) {
+          pop.remove();
+          document.removeEventListener('click', close);
+        }
+      };
+      document.addEventListener('click', close);
+    }, 0);
+  },
+
+
+  showStudentJoinScreen() {
+    document.getElementById('app').innerHTML = `
+      <div class="join-screen">
+        <div class="join-card">
+          <div style="text-align:center;margin-bottom:1.25rem">
+            <img src="assets/lvcc-logo.png" width="56" height="56" alt="LVCC" />
+            <h1 style="font-size:1.25rem;margin-top:0.75rem">LVCC Assessment Portal</h1>
+            <p class="text-muted join-code-hint" style="font-family:'Segoe UI',system-ui,sans-serif !important">Enter your assessment code to begin</p>
+          </div>
+          <div class="join-input-wrap">
+            <input id="join-code-input" type="text" inputmode="numeric" maxlength="9" placeholder="1234-5678" autocomplete="off" />
+            <button type="button" class="btn btn-primary" id="join-code-btn">Join</button>
+          </div>
+          <div class="join-actions-row" style="display:flex;flex-direction:column;gap:0.85rem;align-items:center;justify-content:center;margin-top:1.25rem">
+            <button type="button" class="btn btn-ghost join-dashboard-btn" id="join-go-dash">Go to my Dashboard</button>
+            <div class="theme-tri-switch" id="join-theme-tri" style="margin-top:0.35rem">
+              <button type="button" class="theme-tri-btn" data-theme-set="light" title="Light">☀️</button>
+              <button type="button" class="theme-tri-btn" data-theme-set="dark" title="Dark">🌙</button>
+              <button type="button" class="theme-tri-btn" data-theme-set="retro" title="Retro">👾</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    document.getElementById('join-go-dash').onclick = () => this.showDashboard();
+    document.querySelectorAll('#join-theme-tri [data-theme-set]').forEach(btn => {
+      btn.onclick = () => {
+        if (typeof Theme !== 'undefined') Theme.apply(btn.getAttribute('data-theme-set'), true);
+        document.querySelectorAll('#join-theme-tri [data-theme-set]').forEach(b => {
+          b.classList.toggle('active', b.getAttribute('data-theme-set') === (Theme.current && Theme.current()));
+        });
+      };
+      if (typeof Theme !== 'undefined' && Theme.current) {
+        btn.classList.toggle('active', btn.getAttribute('data-theme-set') === Theme.current());
+      }
+    });
+    document.getElementById('join-code-btn').onclick = () => this.joinByAssessmentCode();
+    const inp = document.getElementById('join-code-input');
+    this.bindExamCodeInput(inp);
+    inp.oninput = () => { inp.value = inp.value.replace(/\D/g, '').slice(0, 8); };
+    inp.onkeydown = (e) => { if (e.key === 'Enter') this.joinByAssessmentCode(); };
+  },
+
+  async joinByAssessmentCode(codeFromArg) {
+    const raw = this.parseExamCodeInput(
+      codeFromArg != null ? codeFromArg : (document.getElementById('join-code-input')?.value || document.getElementById('modal-join-code')?.value || document.getElementById('join-code-input')?.dataset?.rawCode || '')
+    );
+    const code = String(raw).replace(/\D/g, '').slice(0, 8);
+    if (code.length !== 8) {
+      await UI.alert('Please enter a valid 8-digit assessment code (numbers only).', 'Invalid code');
+      return;
+    }
+    try {
+      const snap = await window.db.collection('exams').where('assessmentCode', '==', code).limit(1).get();
+      if (snap.empty) {
+        await UI.alert('Assessment code not found.', 'Not found');
+        return;
+      }
+      const exam = { id: snap.docs[0].id, ...snap.docs[0].data() };
+      if (exam.status === 'draft' || exam.active === false) {
+        await UI.alert('This assessment is not available.', 'Unavailable');
+        return;
+      }
+      const { startAt, endAt } = Exam.getExamWindow(exam);
+      const now = Date.now();
+      if (now > endAt) {
+        await UI.alert('This assessment has ended.', 'Closed');
+        return;
+      }
+      if (now < startAt) {
+        return this.showExamCountdown(exam, startAt);
+      }
+      return this.startStudentExam(exam.id);
+    } catch (e) {
+      console.error(e);
+      await UI.alert(e.message || 'Could not join assessment.', 'Error');
+    }
+  },
+
+  openJoinCodeModal() {
+    document.getElementById('join-modal')?.remove();
+    const wrap = document.createElement('div');
+    wrap.id = 'join-modal';
+    wrap.className = 'popover-overlay';
+    wrap.innerHTML = `<div class="popover-card settings-card">
+      <h3>Join Assessment</h3>
+      <div class="join-input-wrap" style="margin-top:0.75rem">
+        <input id="modal-join-code" type="text" inputmode="numeric" maxlength="9" placeholder="1234-5678" autocomplete="off" />
+        <button type="button" class="btn btn-primary" id="modal-join-btn">Join</button>
+      </div>
+      <button type="button" class="btn btn-ghost w-full mt-1" id="modal-join-cancel">Cancel</button>
+    </div>`;
+    wrap.onclick = (e) => { if (e.target === wrap) wrap.remove(); };
+    document.body.appendChild(wrap);
+    const inp = document.getElementById('modal-join-code');
+    this.bindExamCodeInput(inp);
+    inp.oninput = () => { inp.value = inp.value.replace(/\D/g, '').slice(0, 8); };
+    document.getElementById('modal-join-cancel').onclick = () => wrap.remove();
+    document.getElementById('modal-join-btn').onclick = async () => {
+      const v = inp.value;
+      wrap.remove();
+      await this.joinByAssessmentCode(v);
+    };
+  },
+
+  async showDashboard() {
+    const role = Auth.userProfile.role;
+    if (role === 'student') return this.showStudentDashboard();
+    if (role === 'proctor') return this.showProctorHome();
+    return this.showInstructorDashboard();
+  },
+
+  async showTeacherDashboard() { return this.showInstructorDashboard(); },
+
+  async showInstructorDashboard() {
+    let exams = [];
+    try {
+      exams = (typeof Exam.listMyExams === 'function')
+        ? await Exam.listMyExams()
+        : await Exam.listInstructorExams(Auth.currentUser.uid);
+    } catch (e) { console.warn(e); }
+    const published = exams.filter(e => e.status === 'published' || (e.active !== false && e.status !== 'draft')).length;
+    const drafts = exams.filter(e => e.status === 'draft' || (e.active === false && !e.endAt)).length;
+    this.renderShell(`
+      <h2 class="page-title">Dashboard</h2>
+      <div class="stat-grid" style="margin-top:0.5rem">
+        <div class="stat-card"><div class="stat-val">${exams.length}</div><div class="stat-label">Total assessments</div></div>
+        <div class="stat-card"><div class="stat-val">${published}</div><div class="stat-label">Published</div></div>
+        <div class="stat-card"><div class="stat-val">${drafts}</div><div class="stat-label">Drafts</div></div>
+      </div>
+      <div class="card mt-2">
+        <p class="text-muted">Quick actions</p>
+        <div class="action-btns">
+          <button class="btn btn-primary" onclick="App.showCreateExam()">New assessment</button>
+          <button class="btn btn-ghost" onclick="App.showInstructorHome()">My Assessments</button>
+        </div>
+      </div>
+    `, 'dashboard');
+  },
+
+  async showStudentDashboard() {
+    let sessions = [];
+    try { sessions = await Exam.listStudentSessions(Auth.currentUser.uid); } catch (_) {}
+    const done = sessions.filter(s => s.status === 'submitted').length;
+    const mocks = sessions.filter(s => s.isMock).length;
+    const avg = (() => {
+      const scored = sessions.filter(s => s.score != null);
+      if (!scored.length) return '—';
+      return (scored.reduce((a, s) => a + Number(s.score), 0) / scored.length).toFixed(1);
+    })();
+    this.renderShell(`
+      <div class="page-header-with-action">
+        <h2 class="page-title">Dashboard</h2>
+        <button class="btn btn-primary" onclick="App.openJoinCodeModal()">Join Assessment</button>
+      </div>
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-val">${done}</div><div class="stat-label">Completed</div></div>
+        <div class="stat-card"><div class="stat-val">${avg}</div><div class="stat-label">Avg score</div></div>
+        <div class="stat-card"><div class="stat-val">${mocks}</div><div class="stat-label">Mock attempts</div></div>
+      </div>
+      <div class="card mt-2">
+        <div class="action-btns">
+          <button class="btn btn-primary" onclick="App.showStudentHistory()">Assessments</button>
+          <button class="btn btn-ghost" onclick="App.showMockHistory()">Mock History</button>
+        </div>
+      </div>
+    `, 'dashboard');
+  },
+
+
+  formatExamCodeDisplay(raw) {
+    const d = String(raw || '').replace(/\D/g, '').slice(0, 8);
+    if (d.length <= 4) return d;
+    return d.slice(0, 4) + '-' + d.slice(4);
+  },
+  parseExamCodeInput(val) {
+    return String(val || '').replace(/\D/g, '').slice(0, 8);
+  },
+  bindExamCodeInput(el) {
+    if (!el || el.dataset.codeBound) return;
+    el.dataset.codeBound = '1';
+    el.setAttribute('maxlength', '9');
+    el.setAttribute('inputmode', 'numeric');
+    el.placeholder = el.placeholder || '1234-5678';
+    el.addEventListener('input', () => {
+      const digits = this.parseExamCodeInput(el.value);
+      el.dataset.rawCode = digits;
+      el.value = this.formatExamCodeDisplay(digits);
+    });
+  },
+
+  // ---- Superadmin ----
+  async showSuperAdmin() {
+    this.renderShell(`
+      <h2 class="page-title">Instructor Management</h2>
+      <div class="card">
+        <div class="form-group">
+          <label>Instructor Email</label>
+          <input type="email" id="teacher-email" class="form-control" placeholder="teacher@laverdad.edu.ph" />
+        </div>
+        <button class="btn btn-primary" id="add-teacher-btn">Add Instructor</button>
+        <p id="add-teacher-msg" class="mt-1 text-muted"></p>
+      </div>
+      <div class="card mt-2">
+        <div class="card-title">Non–La Verdad account access</div>
+        <p class="text-muted" style="font-size:0.9rem">Remove users whose email is not @student.laverdad.edu.ph or @laverdad.edu.ph (except accounts you keep as invited/superadmin).</p>
+        <div class="form-group" style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:end">
+          <div>
+            <label>Auto-remove after</label>
+            <div style="display:flex;gap:0.35rem">
+              <input type="number" min="1" id="purge-amount" class="form-control" value="30" style="width:80px" />
+              <select id="purge-unit" class="form-control" style="width:auto">
+                <option value="days">Days</option>
+                <option value="weeks">Weeks</option>
+                <option value="months" selected>Months</option>
+                <option value="years">Years</option>
+              </select>
+            </div>
+          </div>
+          <button class="btn btn-ghost" id="btn-save-purge-policy">Save auto-remove policy</button>
+          <button class="btn btn-danger" id="btn-purge-now">Remove non-school accounts now</button>
+        </div>
+        <p id="purge-msg" class="text-muted mt-1"></p>
+      </div>
+      <div class="card mt-2">
+        <div class="card-title">Instructors & Admins</div>
+        <div id="teachers-list">Loading...</div>
+      </div>
+    `, 'teachers');
+    document.getElementById('add-teacher-btn').onclick = async () => {
+      const email = document.getElementById('teacher-email').value;
+      const msg = document.getElementById('add-teacher-msg');
+      try {
+        const res = await Auth.addInstructor(email);
+        msg.textContent = res.message; msg.style.color = 'var(--success)';
+        this.loadInstructorsList();
+      } catch (err) {
+        msg.textContent = err.message; msg.style.color = 'var(--danger)';
+      }
+    };
+    this.loadInstructorsList();
+  },
+
+  async loadTeachersList() { return this.loadInstructorsList(); },
+
+  async loadInstructorsList() {
+    const el = document.getElementById('teachers-list');
+    try {
+      const teachers = await Auth.listInstructors();
+      const myUid = Auth.currentUser?.uid;
+      el.innerHTML = `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead><tbody>
+        ${teachers.map(t => {
+          let actions = '';
+          if (t.role === 'teacher') {
+            actions = `<button class="btn btn-sm btn-primary" onclick="App.makeSuperAdmin('${t.uid}')">Make Superadmin</button>
+              <button class="btn btn-sm btn-danger" onclick="App.removeInstructor('${t.uid}')">Demote</button>`;
+          } else if (t.role === 'superadmin' && t.uid !== myUid) {
+            actions = `<button class="btn btn-sm btn-ghost" onclick="App.setRole('${t.uid}','teacher')">Make Instructor</button>`;
+          } else actions = '<span class="text-muted">You</span>';
+          return `<tr><td>${escapeHtml(t.name)}</td><td>${escapeHtml(t.email)}</td>
+            <td><span class="role-badge ${t.role}">${t.role}</span></td><td class="action-btns">${actions}</td></tr>`;
+        }).join('')}
+      </tbody></table></div>`;
+    } catch (err) {
+      el.innerHTML = `<p style="color:var(--danger)">${escapeHtml(err.message)}</p>`;
+    }
+  },
+
+  async removeInstructor(uid) {
+    if (!(await UI.confirm('Demote this user to student?', 'Demote'))) return;
+    await Auth.removeInstructor(uid);
+    this.loadInstructorsList();
+  },
+  async makeSuperAdmin(uid) {
+    if (!(await UI.confirm('Promote to Superadmin?', 'Promote'))) return;
+    await Auth.setRole(uid, 'superadmin');
+    this.loadInstructorsList();
+  },
+  async setRole(uid, role) {
+    if (!(await UI.confirm('Change role to "' + role + '"?', 'Change role'))) return;
+    await Auth.setRole(uid, role);
+    this.loadInstructorsList();
+  },
+
+  // ---- Instructor ----
+  async showTeacherHome() { return this.showInstructorHome(); },
+
+  async showInstructorHome() {
+    this.renderShell(`<div id="exams-container">Loading...</div>`, 'exams');
+    await Dashboard.renderMyExams(document.getElementById('exams-container'));
+  },
+
+  autosaveKey() { return 'lvcc_draft_' + (Auth.currentUser?.uid || 'anon'); },
+  saveAutosave() {
+    try {
+      const data = {
+        title: document.getElementById('exam-title')?.value || '',
+        subject: document.getElementById('exam-subject')?.value || '',
+        examType: document.getElementById('exam-type')?.value || 'regular',
+        language: document.getElementById('exam-language')?.value || 'python',
+        starter: document.getElementById('exam-starter')?.value || '',
+        answer: document.getElementById('exam-answer')?.value || '',
+        maxScore: document.getElementById('exam-maxscore')?.value || 100,
+        sections: window._builderSections || [],
+        at: Date.now()
+      };
+      localStorage.setItem(this.autosaveKey(), JSON.stringify(data));
+    } catch (_) {}
+  },
+  loadAutosave() {
+    try {
+      const raw = localStorage.getItem(this.autosaveKey());
+      return raw ? JSON.parse(raw) : null;
+    } catch (_) { return null; }
+  },
+  clearAutosave() {
+    try { localStorage.removeItem(this.autosaveKey()); } catch (_) {}
+  },
+
+
+
+  /** Estimate JSON size in bytes */
+  _payloadBytes(obj) {
+    try { return new Blob([JSON.stringify(obj)]).size; } catch (_) {
+      return JSON.stringify(obj).length;
+    }
+  },
+
+  /**
+   * Firestore max document size is 1 MiB (hard limit — not configurable).
+   * Compress/strip base64 images so the exam doc stays under ~900 KB.
+   * (User-facing "budget" keeps room for metadata; total content aim < 1 MB.)
+   */
+  async compressAssessmentPayload(payload, maxBytes = 900000) {
+    const clone = JSON.parse(JSON.stringify(payload));
+    const compressDataUrl = (dataUrl, maxW = 640, quality = 0.55) => new Promise((resolve) => {
+      if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image')) {
+        resolve(dataUrl); return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        try {
+          let w = img.width, h = img.height;
+          if (w > maxW) { h = Math.round(h * (maxW / w)); w = maxW; }
+          const c = document.createElement('canvas');
+          c.width = w; c.height = h;
+          c.getContext('2d').drawImage(img, 0, 0, w, h);
+          let out = c.toDataURL('image/jpeg', quality);
+          // further shrink if still huge
+          if (out.length > 120000) {
+            out = c.toDataURL('image/jpeg', 0.35);
+          }
+          if (out.length > 80000) {
+            const c2 = document.createElement('canvas');
+            c2.width = Math.round(w * 0.7); c2.height = Math.round(h * 0.7);
+            c2.getContext('2d').drawImage(c, 0, 0, c2.width, c2.height);
+            out = c2.toDataURL('image/jpeg', 0.32);
+          }
+          resolve(out);
+        } catch (_) { resolve(null); }
+      };
+      img.onerror = () => resolve(null);
+      img.src = dataUrl;
+    });
+
+    const walk = async (node) => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        for (let i = 0; i < node.length; i++) {
+          if (typeof node[i] === 'string' && node[i].startsWith('data:image')) {
+            node[i] = await compressDataUrl(node[i]) || '';
+          } else {
+            await walk(node[i]);
+          }
+        }
+        return;
+      }
+      for (const k of Object.keys(node)) {
+        const v = node[k];
+        if (typeof v === 'string' && v.startsWith('data:image')) {
+          node[k] = await compressDataUrl(v) || '';
+        } else if (v && typeof v === 'object') {
+          await walk(v);
+        }
+      }
+    };
+
+    await walk(clone);
+    let size = this._payloadBytes(clone);
+    // If still too large, strip images progressively
+    if (size > maxBytes) {
+      const stripImgs = (node) => {
+        if (!node || typeof node !== 'object') return;
+        if (Array.isArray(node)) { node.forEach(stripImgs); return; }
+        for (const k of Object.keys(node)) {
+          if (typeof node[k] === 'string' && node[k].startsWith('data:image') && node[k].length > 5000) {
+            node[k] = ''; // drop oversized embedded image
+          } else if (node[k] && typeof node[k] === 'object') stripImgs(node[k]);
+        }
+      };
+      stripImgs(clone);
+      size = this._payloadBytes(clone);
+    }
+    clone._payloadBytes = size;
+    return clone;
+  },
+
+  /** Collect form + builder into a clean Firestore-safe payload */
+  collectAssessmentForm(status = 'draft') {
+    // Always sync flat list from sections
+    const sections = JSON.parse(JSON.stringify(window._builderSections || []));
+    const questions = sections.flatMap(s => s.questions || []);
+    window._builderSections = sections;
+    window._builderQuestions = questions;
+
+    const title = (document.getElementById('exam-title')?.value || '').trim();
+    const subject = (document.getElementById('exam-subject')?.value || '').trim();
+    const examType = document.getElementById('exam-type')?.value || 'regular';
+    const language = document.getElementById('exam-language')?.value || 'python';
+    const instructions = (document.getElementById('exam-instructions')?.value || '').trim();
+    const starterCode = document.getElementById('exam-starter')?.value || '';
+    const answerKey = document.getElementById('exam-answer')?.value || '';
+    const maxScore = examType === 'regular' ? 0 : (Number(document.getElementById('exam-maxscore')?.value) || 100);
+
+    const payload = {
+      title,
+      subject: subject || 'General',
+      instructions,
+      examType,
+      language: language === 'java' ? 'java' : 'python',
+      starterCode,
+      answerKey,
+      maxScore,
+      questions: examType === 'regular' ? questions : [],
+      sections: examType === 'regular' ? sections : [],
+      status: status === 'published' ? 'published' : 'draft',
+      active: status === 'published'
+    };
+    return payload;
+  },
+
+
+  // ---- Builder undo/redo ----
+  _bhUndo: [],
+  _bhRedo: [],
+  _bhMax: 40,
+  _bhQuiet: false,
+
+  _bindBuilderHotkeys() {
+    if (this._bhKeysBound) return;
+    this._bhKeysBound = true;
+    document.addEventListener('keydown', (e) => {
+      const tag = (e.target && e.target.tagName) || '';
+      // Allow Ctrl+Z/Y even in inputs for builder undo (standard UX)
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (!document.getElementById('btn-builder-undo')) return;
+      const k = (e.key || '').toLowerCase();
+      if (k === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        this.undoBuilder();
+      } else if (k === 'y' || (k === 'z' && e.shiftKey)) {
+        e.preventDefault();
+        this.redoBuilder();
+      }
+    });
+  },
+  pushBuilderHistory(immediate) {
+    if (this._bhQuiet) return;
+    const doPush = () => {
+      try {
+        const snap = JSON.stringify({
+          sections: window._builderSections || [],
+          questions: window._builderQuestions || []
+        });
+        const last = this._bhUndo[this._bhUndo.length - 1];
+        if (last === snap) return;
+        this._bhUndo.push(snap);
+        if (this._bhUndo.length > this._bhMax) this._bhUndo.shift();
+        this._bhRedo = [];
+        this._syncUndoRedoBtns();
+      } catch (_) {}
+    };
+    if (immediate) {
+      if (this._bhDebounce) { clearTimeout(this._bhDebounce); this._bhDebounce = null; }
+      doPush();
+      return;
+    }
+    // Debounce typing so Ctrl+Z undoes one logical edit, not every keystroke
+    if (this._bhDebounce) clearTimeout(this._bhDebounce);
+    this._bhDebounce = setTimeout(doPush, 600);
+  },
+  undoBuilder() {
+    if (this._bhUndo.length < 2) return;
+    const cur = this._bhUndo.pop();
+    this._bhRedo.push(cur);
+    const prev = this._bhUndo[this._bhUndo.length - 1];
+    this._applyBuilderSnap(prev);
+  },
+  redoBuilder() {
+    if (!this._bhRedo.length) return;
+    const next = this._bhRedo.pop();
+    this._bhUndo.push(next);
+    this._applyBuilderSnap(next);
+  },
+  _applyBuilderSnap(snap) {
+    try {
+      const data = JSON.parse(snap);
+      this._bhQuiet = true;
+      window._builderSections = data.sections || [];
+      window._builderQuestions = data.questions || (window._builderSections || []).flatMap(s => s.questions || []);
+      if (typeof window._renderAssessmentBuilder === 'function') window._renderAssessmentBuilder();
+      this._bhQuiet = false;
+      this._syncUndoRedoBtns();
+    } catch (_) { this._bhQuiet = false; }
+  },
+  _syncUndoRedoBtns() {
+    const u = document.getElementById('btn-builder-undo');
+    const r = document.getElementById('btn-builder-redo');
+    if (u) u.disabled = this._bhUndo.length < 2;
+    if (r) r.disabled = !this._bhRedo.length;
+  },
+
+
+  scrollToBuilderIssue(selector, message) {
+    try {
+      const el = typeof selector === 'string' ? document.querySelector(selector) : selector;
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('field-blink');
+        setTimeout(() => el.classList.remove('field-blink'), 2400);
+        if (el.focus) try { el.focus(); } catch (_) {}
+      }
+    } catch (_) {}
+    if (message) return Promise.resolve(UI.alert(message, 'Required'));
+    return Promise.resolve();
+  },
+
+  async saveAssessment(status = 'draft', schedule = null) {
+    let payload = this.collectAssessmentForm(status);
+    if (!payload.title) {
+      throw new Error('Title is required.');
+    }
+    if (!payload.subject || payload.subject === '') {
+      throw new Error('Subject is required.');
+    }
+    if (status === 'published' && payload.examType === 'regular' && !(payload.questions || []).length) {
+      throw new Error('Add at least one question before publishing.');
+    }
+    // All multiple-choice options must be non-blank
+    const qs = payload.questions || [];
+    for (let qi = 0; qi < qs.length; qi++) {
+      const q = qs[qi];
+      if (q && (q.type === 'multiple' || q.type === 'dropdown' || q.type === 'multiselect')) {
+        const opts = q.options || [];
+        const blankIdx = opts.findIndex(o => !String(o == null ? '' : o).trim());
+        if (!opts.length || blankIdx >= 0) {
+          const el = document.querySelector(`[data-opt-text="${qi}:${Math.max(0, blankIdx)}"]`)
+            || document.querySelector(`[data-prompt="${qi}"]`)
+            || document.querySelector('.gq-block');
+          await this.scrollToBuilderIssue(el, 'All multiple choice options must have text (no blank choices).');
+          throw new Error('All multiple choice options must have text (no blank choices).');
+        }
+      }
+      if (q && !String(q.prompt || q.sentence || '').trim() && q.type === 'multiple') {
+        const el = document.querySelector(`[data-prompt="${qi}"]`);
+        await this.scrollToBuilderIssue(el, 'Question prompt is required.');
+        throw new Error('Question prompt is required.');
+      }
+      // Require correct answers on blanks / keys (essay exempt)
+      if (q && q.type === 'fill') {
+        const blanks = q.blanks || [];
+        const parts = (q.parts || []).filter(p => p.kind === 'blank');
+        const list = blanks.length ? blanks : parts;
+        for (let bi = 0; bi < list.length; bi++) {
+          const b = list[bi];
+          const corr = (b.correct || b.answer || '').toString().trim();
+          if (!corr) {
+            const el = document.querySelector(`[data-fill-correct="${qi}:${bi}"]`) || document.querySelector(`[data-blank-correct="${qi}:${bi}"]`);
+            await this.scrollToBuilderIssue(el || document.querySelector(`[data-prompt="${qi}"]`), 'Each fill-in-the-blank needs a correct answer.');
+            throw new Error('Each fill-in-the-blank needs a correct answer.');
+          }
+        }
+      }
+      if (q && q.type === 'wordbox') {
+        const kids = q.questions || [{ sentence: q.sentence, blanks: q.blanks }];
+        for (const kq of kids) {
+          // blanks encoded as {Word} in sentence — require at least one bank word used
+          const sent = kq.sentence || q.sentence || '';
+          if (!sent.trim()) {
+            await this.scrollToBuilderIssue(document.querySelector(`[data-prompt="${qi}"]`), 'Wordbox sentence is required.');
+            throw new Error('Wordbox sentence is required.');
+          }
+        }
+      }
+      if (q && q.type === 'categorize') {
+        const items = q.items || [];
+        if (!items.length) {
+          await this.scrollToBuilderIssue(document.querySelector(`[data-cat-add-item="${qi}"]`), 'Add at least one categorize item with an answer key.');
+          throw new Error('Categorize needs items and answer keys.');
+        }
+        for (const it of items) {
+          if (!it.category && !it.catId) {
+            await this.scrollToBuilderIssue(document.querySelector(`[data-cat-item-cat="${qi}:0"]`), 'Each categorize item needs a category answer key.');
+            throw new Error('Each categorize item needs a category answer key.');
+          }
+        }
+      }
+      if (q && q.type === 'match') {
+        const left = q.left || [];
+        const key = q.correct;
+        if (!left.length) {
+          await this.scrollToBuilderIssue(document.querySelector(`[data-prompt="${qi}"]`), 'Match needs items and answer keys.');
+          throw new Error('Match needs items and answer keys.');
+        }
+      }
+      if (q && (q.type === 'table' || q.type === 'tablefill') && q.cells) {
+        const blanks = Object.keys(q.cells).filter(k => q.cells[k] && q.cells[k].blank);
+        for (const k of blanks) {
+          const cell = q.cells[k];
+          const corr = Array.isArray(cell.correct) ? cell.correct[0] : cell.correct;
+          if (!String(corr || '').trim()) {
+            await this.scrollToBuilderIssue(document.querySelector('.table-fill-single'), 'Every blank cell needs a correct answer.');
+            throw new Error('Every blank cell needs a correct answer.');
+          }
+        }
+      }
+      if (q && (q.type === 'multiple' || q.type === 'truefalse' || q.type === 'modified_tf')) {
+        if (q.correct == null || (Array.isArray(q.correct) && !q.correct.length)) {
+          await this.scrollToBuilderIssue(document.querySelector(`[data-prompt="${qi}"]`), 'Mark the correct answer for this question.');
+          throw new Error('Mark the correct answer for this question.');
+        }
+      }
+      if (q && (q.type === 'passage' || q.isPassageSet) && Array.isArray(q.questions)) {
+        for (const kq of q.questions) {
+          if (kq && kq.type === 'multiple') {
+            const opts = kq.options || [];
+            if (!opts.length || opts.some(o => !String(o == null ? '' : o).trim())) {
+              await this.scrollToBuilderIssue('.passage-dual', 'All passage multiple choice options must have text (no blank choices).');
+              throw new Error('All passage multiple choice options must have text (no blank choices).');
+            }
+          }
+        }
+      }
+    }
+    if (!payload.title) {
+      await this.scrollToBuilderIssue('#exam-title', 'Title is required.');
+    }
+    if (schedule) {
+      payload.startAt = schedule.startAt;
+      payload.endAt = schedule.endAt;
+      payload.durationMinutes = schedule.durationMinutes || Math.max(1, Math.round((schedule.endAt - schedule.startAt) / 60000));
+      if (schedule.randomizeQuestions != null) payload.randomizeQuestions = !!schedule.randomizeQuestions;
+    } else if (status === 'draft') {
+      payload.startAt = payload.startAt || Date.now();
+      payload.endAt = payload.endAt || (Date.now() + 3600000);
+      payload.durationMinutes = payload.durationMinutes || 60;
+    }
+
+    // Strip undefined (Firestore rejects undefined)
+    Object.keys(payload).forEach(k => payload[k] === undefined && delete payload[k]);
+
+    // Light compress first (smaller uploads), then move images to Firebase Storage
+    // so the Firestore exam document stays under the 1 MB hard limit.
+    payload = await this.compressAssessmentPayload(payload, 900 * 1024); // keep under ~1MB Firestore doc
+    delete payload._payloadBytes;
+
+    let examId = window._editingExamId || sessionStorage.getItem('lvcc_editing_exam') || null;
+
+    // Need an exam id before Storage paths work — create a stub if new
+    if (!examId) {
+      const stub = await Exam.createExam({
+        ...payload,
+        questions: [],
+        sections: [],
+        status: status === 'published' ? 'published' : 'draft'
+      });
+      examId = stub.id;
+      window._editingExamId = examId;
+      try { sessionStorage.setItem('lvcc_editing_exam', examId); } catch (_) {}
+    }
+
+    // Storage upload PARKED — keep images inline in Firestore (must stay under 1 MB total)
+    // Do not call MediaStore.externalizeImages until Storage is configured and billing works.
+    const bytes = this._payloadBytes(payload);
+    if (bytes > 1048576) {
+      throw new Error(
+        'Assessment is too large (' + Math.round(bytes / 1024) + ' KB). Firestore max is 1 MB per document. ' +
+        'Reduce or remove images so the whole assessment is under 1 MB, then try again.'
+      );
+    }
+
+    await Exam.updateExam(examId, payload);
+    window._editingExamId = examId;
+    try { sessionStorage.setItem('lvcc_editing_exam', examId); } catch (_) {}
+    this.clearAutosave();
+    return examId;
+  },
+
+  async showCreateExam(opts = {}) {
+    // opts.keepEditing = true when called from editExam
+    if (!opts.keepEditing) {
+      window._editingExamId = null;
+      try { sessionStorage.removeItem('lvcc_editing_exam'); } catch (_) {}
+    } else {
+      // Preserve edit id
+      window._editingExamId = window._editingExamId || sessionStorage.getItem('lvcc_editing_exam');
+    }
+    window._builderSections = window._builderSections || [];
+    if (!opts.keepEditing) {
+      window._builderSections = [];
+      window._builderQuestions = [];
+    }
+    this._bhUndo = [];
+    this._bhRedo = [];
+    this._bindBuilderHotkeys();
+    if (!Auth.isInstructor()) {
+      await UI.alert('Only instructors can create assessments. Students can generate mock assessments from History.', 'Access');
+      this.showStudentHome();
+      return;
+    }
+    const now = new Date();
+    const later = new Date(now.getTime() + 60 * 60000);
+    const toLocal = (d) => {
+      const pad = n => String(n).padStart(2, '0');
+      return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    };
+
+    this.renderShell(`
+      <h2 class="page-title">Create Assessment</h2>
+      <div class="card">
+        <div class="form-group">
+          <label>Title <span style="color:var(--danger)">*</span></label>
+          <input id="exam-title" class="form-control" placeholder="Assessment title" value="" />
+        </div>
+        <div class="form-group">
+          <label>Subject <span style="color:var(--danger)">*</span></label>
+          <input id="exam-subject" class="form-control" placeholder="e.g. English, Math" value="" />
+        </div>
+        <div class="form-group">
+          <label>Exam type</label>
+          <select id="exam-type" class="form-control">
+            <option value="regular" selected>Regular Assessment</option>
+            <option value="code">Code Assessment</option>
+          </select>
+        </div>
+        <div class="form-group" id="lang-group">
+          <label>Programming language</label>
+          <select id="exam-language" class="form-control">
+            <option value="python">Python</option>
+            <option value="java">Java</option>
+          </select>
+        </div>
+        <!-- Instructions are per-section when adding questions -->
+        <!-- Start/end only on Publish -->
+        <div class="form-group">
+          <label id="maxscore-label">Max score (default 100 for code)</label>
+          <input type="number" id="exam-maxscore" class="form-control" value="100" min="1" />
+        </div>
+        <div id="code-fields">
+          <div class="form-group">
+            <label>Starter code</label>
+            <textarea id="exam-starter" class="form-control" rows="5" style="font-family:monospace"></textarea>
+          </div>
+          <div class="form-group">
+            <label>Expected Output (optional)</label>
+            <textarea id="exam-answer" class="form-control" rows="4" style="font-family:monospace"></textarea>
+          </div>
+        </div>
+        <div id="regular-fields" class="hidden">
+          <div class="card-title">Question sections</div>
+          <div id="questions-builder" class="mt-2"></div>
+        </div>
+        <div class="modal-actions action-btns form-footer-actions form-footer-split">
+          <div class="footer-left">
+            <button class="btn btn-primary" id="add-question-footer-btn" type="button">Add Question</button>
+          </div>
+          <div class="footer-right" style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center">
+            <button type="button" class="btn btn-ghost" id="btn-builder-undo" title="Undo" onclick="App.undoBuilder()">↶ Undo</button>
+            <button type="button" class="btn btn-ghost" id="btn-builder-redo" title="Redo" onclick="App.redoBuilder()">↷ Redo</button>
+            <button class="btn btn-ghost" onclick="App.saveAutosave();App.showInstructorHome()">Cancel</button>
+            <button class="btn btn-ghost" id="draft-exam-btn">Save as Draft</button>
+            <button class="btn btn-primary" id="create-exam-btn">Publish</button>
+          </div>
+        </div>
+      </div>
+    `, 'exams');
+
+    const typeEl = document.getElementById('exam-type');
+    const syncType = () => {
+      const reg = typeEl.value === 'regular';
+      document.getElementById('lang-group').classList.toggle('hidden', reg);
+      document.getElementById('code-fields').classList.toggle('hidden', reg);
+      document.getElementById('regular-fields').classList.toggle('hidden', !reg);
+      const maxG = document.getElementById('exam-maxscore')?.closest('.form-group');
+      if (maxG) maxG.classList.toggle('hidden', reg);
+    };
+    typeEl.onchange = syncType;
+    syncType();
+
+    // keepEditing: do not wipe sections loaded by editExam
+    if (!opts.keepEditing) {
+      window._builderSections = [];
+      window._builderQuestions = [];
+    } else {
+      window._builderSections = window._builderSections || [];
+      window._builderQuestions = window._builderQuestions || [];
+    }
+
+    const syncFlat = () => {
+      window._builderQuestions = (window._builderSections || []).flatMap(s => s.questions || []);
+    };
+
+    const defaultSectionInstructions = (type) => ({
+      multiple: 'Choose the best answer. Select the correct option.',
+      truefalse: 'Select True or False for each statement.',
+      modified_tf: 'Select True or False. If False, write the correct answer in the text box.',
+      fill: 'Fill in each blank with the correct word or phrase.',
+      essay: 'Write a complete response in the text box (max 1000 characters).',
+      table: 'Fill in the blank cells in the table with the correct values.',
+      passage: 'Read the passage carefully, then answer the related questions.',
+      dropdown: 'Select the correct option from the dropdown.',
+      match: 'Match each item on the left with the correct option on the right.',
+      reorder: 'Put the items in the correct order.',
+      categorize: 'Place each item into the correct category.',
+      wordbox: 'Drag words from the bank into the blanks in the sentence.',
+    }[type] || 'Read the instructions and answer carefully.');
+
+    const openTypePicker = async () => {
+      return new Promise((resolve) => {
+        const root = document.getElementById('ui-modal-root') || (() => {
+          const el = document.createElement('div'); el.id = 'ui-modal-root'; document.body.appendChild(el); return el;
+        })();
+        root.style.cssText = 'position:fixed;inset:0;z-index:50000;pointer-events:auto;';
+        root.innerHTML = `<div class="modal-overlay ui-modal-overlay" style="z-index:50000;pointer-events:auto"><div class="modal ui-modal modal-wide">
+          <h2>Select question type</h2>
+          <div class="type-picker type-picker-modal type-cards type-grid-4x4">${QUESTION_TYPES.map(x =>
+            `<button type="button" class="type-card" data-type="${x.id}"><span class="type-card-label">${escapeHtml(x.label)}</span></button>`
+          ).join('')}</div>
+          <div class="modal-actions"><button class="btn btn-ghost" id="type-cancel">Cancel</button></div>
+        </div></div>`;
+        const cancel = root.querySelector('#type-cancel');
+        if (cancel) cancel.onclick = () => { UI.close(); resolve(null); };
+        root.querySelectorAll('.type-card').forEach(btn => {
+          btn.onclick = () => { UI.close(); resolve(btn.dataset.type); };
+        });
+      });
+    };
+
+    const addSectionOfType = (type) => {
+      if (!type) return;
+      const label = (QUESTION_TYPES.find(x => x.id === type) || { label: type }).label;
+      const sec = Regular.newSection(label);
+      sec.instructions = defaultSectionInstructions(type);
+      const q = Regular.newQuestion(type);
+      if (type === 'essay') {
+        q.caption = q.caption || 'Note: Open-ended scores may be adjusted by your instructor based on a personal assessment of your response, as open-ended answers may not be fully auto-graded on this portal.';
+      }
+      sec.questions.push(q);
+      window._builderSections = window._builderSections || [];
+      window._builderSections.push(sec);
+      window._builderQuestions = window._builderSections.flatMap(s => s.questions || []);
+      if (typeof window._renderAssessmentBuilder === 'function') {
+        window._renderAssessmentBuilder();
+      } else if (typeof renderBuilder === 'function') {
+        renderBuilder();
+      }
+    };
+
+    window._lvccOpenTypePicker = openTypePicker;
+    window._lvccAddSectionOfType = addSectionOfType;
+
+
+    const renderBuilder = function renderBuilder() {
+      window._renderAssessmentBuilder = renderBuilder;
+      window._lvccRenderBuilder = renderBuilder;
+      try { App.pushBuilderHistory(); } catch (_) {}
+      const box = document.getElementById('questions-builder');
+      if (!box) return;
+      const sections = window._builderSections || [];
+      if (!sections.length) {
+        box.innerHTML = '<p class="text-muted">No sections yet. Choose a question type below to start a section.</p>';
+      } else {
+      box.innerHTML = sections.map((sec, si) => {
+        const qs = sec.questions || [];
+        const qHtml = qs.map((q, qi) => {
+          // global index in flat list
+          const globalIdx = sections.slice(0, si).reduce((a, s) => a + (s.questions || []).length, 0) + qi;
+          const typeSel = ''; // type fixed per section
+          const numLabel = `<div class="q-num-badge">Q${qi + 1}</div>`;
+          if (q.type === 'multiple' || q.type === 'multiselect') {
+            return `<div class="card q-in-section" data-si="${si}" data-qi="${qi}">${numLabel}${Regular.renderBuilderMC(q, globalIdx)}
+              <button type="button" class="btn btn-sm btn-muted mt-1" data-del-q="${si}:${qi}">Remove question</button></div>`;
+          }
+          if (q.type === 'truefalse' || q.type === 'modified_tf') {
+            return `<div class="card q-in-section" data-si="${si}" data-qi="${qi}">${numLabel}${Regular.renderBuilderTF(q, globalIdx)}
+              <button type="button" class="btn btn-sm btn-muted mt-1" data-del-q="${si}:${qi}">Remove question</button></div>`;
+          }
+          if (q.type === 'completecode' || q.type === 'dragdrop') {
+            return `<div class="card q-in-section" data-si="${si}" data-qi="${qi}">${numLabel}${Regular.renderBuilderCompleteCode(q, globalIdx)}
+              <button type="button" class="btn btn-sm btn-muted mt-1" data-del-q="${si}:${qi}">Remove question</button></div>`;
+          }
+          if (q.type === 'wordbox') {
+            return `<div class="card q-in-section" data-si="${si}" data-qi="${qi}">${numLabel}${Regular.renderBuilderWordBox(q, globalIdx)}
+              <button type="button" class="btn btn-sm btn-muted mt-1" data-del-q="${si}:${qi}">Remove question</button></div>`;
+          }
+          if (q.type === 'completecode' || q.type === 'dragdrop') {
+          const r = Regular.scoreCompleteCode(q, answers[q.id]);
+          earned += r.score != null ? r.score : 0; maxPts += r.max || 0;
+        } else if (q.type === 'fill') {
+            return `<div class="card q-in-section" data-si="${si}" data-qi="${qi}">${numLabel}${Regular.renderBuilderFill(q, globalIdx)}
+              <button type="button" class="btn btn-sm btn-muted mt-1" data-del-q="${si}:${qi}">Remove question</button></div>`;
+          }
+          if (q.type === 'passage' || q.isPassageSet) {
+            return `<div class="card q-in-section passage-builder-wrap" data-si="${si}" data-qi="${qi}">${numLabel}${Regular.renderBuilderPassage(q, globalIdx)}
+              <button type="button" class="btn btn-sm btn-muted mt-1" data-del-q="${si}:${qi}">Remove question</button></div>`;
+          }
+          if (q.type === 'categorize') {
+            return `<div class="card q-in-section categorize-builder-wrap" data-si="${si}" data-qi="${qi}">${numLabel}${Regular.renderBuilderCategorize(q, globalIdx)}
+              <button type="button" class="btn btn-sm btn-muted mt-1" data-del-q="${si}:${qi}">Remove question</button></div>`;
+          }
+          if (q.type === 'table') {
+            return `<div class="card q-in-section table-builder-wrap" data-si="${si}" data-qi="${qi}">${numLabel}${Regular.renderBuilderTable(q, globalIdx)}
+              <button type="button" class="btn btn-sm btn-muted mt-1" data-del-q="${si}:${qi}">Remove question</button></div>`;
+          }
+          if (q.type === 'match') {
+            return `<div class="card q-in-section" data-si="${si}" data-qi="${qi}">${numLabel}${Regular.renderBuilderMatch(q, globalIdx)}
+              <button type="button" class="btn btn-sm btn-ghost mt-1" data-dup-q="${si}:${qi}">Duplicate</button>
+              <button type="button" class="btn btn-sm btn-muted mt-1" data-del-q="${si}:${qi}">Remove question</button></div>`;
+          }
+          return `<div class="card q-in-section" data-si="${si}" data-qi="${qi}">${numLabel}
+            <textarea class="form-control q-prompt" data-gidx="${globalIdx}" placeholder="Type question here" rows="2">${escapeHtml(q.prompt||'')}</textarea>
+            <input class="form-control mt-1" data-correct-text="${globalIdx}" value="${escapeHtml(String(Array.isArray(q.correct)?(q.correct[0]||''): (q.correct ?? '')))}" placeholder="Correct / suggested answer" />
+            <input class="form-control mt-1" data-correct-alt="${globalIdx}" value="${escapeHtml((q.alternatives||[]).join(', '))}" placeholder="Alternate correct answers (comma-separated)" />
+            <label class="mt-1">Points <input type="number" class="form-control" style="width:80px;display:inline-block" data-points="${globalIdx}" value="${q.points??1}" /></label>
+            <button type="button" class="btn btn-sm btn-muted mt-1" data-del-q="${si}:${qi}">Remove question</button>
+          </div>`;
+        }).join('');
+        return `
+          <div class="section-block" data-si="${si}">
+            <div class="section-head" style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;flex-wrap:wrap">
+              <h3 style="margin:0">${escapeHtml(sec.title)}</h3>
+              <div class="action-btns" style="margin:0">
+                <button type="button" class="btn btn-sm btn-primary" data-test-sec="${si}" title="Test this section as student">Test section</button>
+                <button type="button" class="btn btn-sm btn-danger" data-del-sec="${si}">Remove section</button>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Section instructions</label>
+              <textarea class="form-control" data-sec-instr="${si}" rows="2" placeholder="Instructions for this section">${escapeHtml(sec.instructions||'')}</textarea>
+            </div>
+            ${qHtml}
+            <button type="button" class="btn btn-ghost btn-sm" data-add-same="${si}">+ Add ${escapeHtml(sec.title)} question</button>
+          </div>`;
+      }).join('');
+
+      // wire section instructions
+      box.querySelectorAll('[data-sec-instr]').forEach(el => {
+        el.oninput = () => { window._builderSections[Number(el.dataset.secInstr)].instructions = el.value; };
+      });
+      box.querySelectorAll('[data-test-sec]').forEach(el => {
+        el.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const si = Number(el.dataset.testSec);
+          try { App.openSectionTestPreview(si); } catch (err) { console.error(err); }
+        };
+      });
+      box.querySelectorAll('[data-del-sec]').forEach(el => {
+        el.onclick = async () => {
+          if (!(await UI.confirm('Remove this entire section and its questions?', 'Remove section'))) return;
+          window._builderSections.splice(Number(el.dataset.delSec), 1);
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      
+      box.querySelectorAll('[data-match-left]').forEach(el => {
+        el.oninput = () => {
+          const [gi, i] = el.dataset.matchLeft.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q) return; q.left = q.left || []; q.left[i] = el.value;
+          // Live-update answer key label for this Column A item
+          const sel = box.querySelector(`[data-match-key="${gi}:${i}"]`);
+          const lab = sel && sel.closest('label');
+          if (lab && sel) {
+            const txt = (el.value || '').trim() || ('A' + (i + 1));
+            lab.innerHTML = '';
+            lab.appendChild(document.createTextNode(txt + ' → '));
+            lab.appendChild(sel);
+          }
+        };
+      });
+      box.querySelectorAll('[data-match-right]').forEach(el => {
+        el.oninput = () => {
+          const [gi, i] = el.dataset.matchRight.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q) return; q.right = q.right || []; q.right[i] = el.value;
+        };
+      });
+      box.querySelectorAll('[data-match-key]').forEach(el => {
+        el.onchange = () => {
+          const [gi, i] = el.dataset.matchKey.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q) return; q.correct = q.correct || []; q.correct[i] = Number(el.value);
+        };
+      });
+      box.querySelectorAll('[data-match-add-left]').forEach(el => {
+        el.onclick = () => {
+          const gi = Number(el.dataset.matchAddLeft);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q) return; q.left = q.left || []; q.left.push(''); q.correct = q.correct || []; q.correct.push(0); renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-match-add-right]').forEach(el => {
+        el.onclick = () => {
+          const gi = Number(el.dataset.matchAddRight);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q) return; q.right = q.right || []; q.right.push(''); renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-match-del-left]').forEach(el => {
+        el.onclick = () => {
+          const [gi, i] = el.dataset.matchDelLeft.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q || !q.left) return; q.left.splice(i,1); if (q.correct) q.correct.splice(i,1); renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-match-del-right]').forEach(el => {
+        el.onclick = () => {
+          const [gi, i] = el.dataset.matchDelRight.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q || !q.right) return; q.right.splice(i,1); renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-del-q]').forEach(el => {
+        el.onclick = async () => {
+          if (!(await UI.confirm('Delete this question?', 'Delete question'))) return;
+          const [si, qi] = el.dataset.delQ.split(':').map(Number);
+          window._builderSections[si].questions.splice(qi, 1);
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-add-same]').forEach(el => {
+        el.onclick = () => {
+          const si = Number(el.dataset.addSame);
+          const type = (window._builderSections[si].questions[0] || {}).type || 'multiple';
+          window._builderSections[si].questions.push(Regular.newQuestion(type));
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      // re-use global index handlers for MC/TF
+      const flat = window._builderQuestions;
+      box.querySelectorAll('[data-prompt]').forEach(el => {
+        el.oninput = () => { const i = Number(el.dataset.prompt); if (flat[i]) flat[i].prompt = el.value; };
+      });
+      box.querySelectorAll('.q-prompt').forEach(el => {
+        if (el.dataset.gidx !== undefined) el.oninput = () => { const i = Number(el.dataset.gidx); if (flat[i]) flat[i].prompt = el.value; };
+      });
+      box.querySelectorAll('[data-opt-text]').forEach(el => {
+        el.oninput = () => {
+          const [qi, oi] = el.dataset.optText.split(':').map(Number);
+          const q = (window._builderQuestions || [])[qi] || flat[qi];
+          if (!q) return;
+          if (!Array.isArray(q.options)) q.options = [];
+          q.options[oi] = el.value;
+          // no history push on keystroke — browser handles text undo; structural undo is separate
+        };
+        // Don't re-render on every keystroke — that wipes the field
+      });
+      box.querySelectorAll('[data-correct]').forEach(el => {
+        el.onclick = () => {
+          const [qi, oi] = el.dataset.correct.split(':').map(Number);
+          const q = flat[qi]; if (!q) return;
+          if (q.multiCorrect) {
+            const arr = Array.isArray(q.correct) ? q.correct.map(Number) : [];
+            const idx = arr.indexOf(oi);
+            if (idx >= 0) arr.splice(idx, 1); else arr.push(oi);
+            q.correct = arr;
+          } else q.correct = oi;
+          // write back to section
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-del-opt]').forEach(el => {
+        el.onclick = () => {
+          const [qi, oi] = el.dataset.delOpt.split(':').map(Number);
+          if (flat[qi]) flat[qi].options.splice(oi, 1);
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-add-opt]').forEach(el => {
+        el.onclick = () => {
+          const qi = Number(el.dataset.addOpt);
+          if (flat[qi]) flat[qi].options.push('');
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-multi]').forEach(el => {
+        el.onchange = () => {
+          const qi = Number(el.dataset.multi);
+          const q = flat[qi]; if (!q) return;
+          const modeSel = box.querySelector(`[data-pointsmode="${qi}"]`);
+          if (modeSel) q.pointsMode = modeSel.value;
+          const ptsInp = box.querySelector(`[data-points="${qi}"]`);
+          if (ptsInp) q.points = Number(ptsInp.value) || 1;
+          q.multiCorrect = el.checked;
+          q.correct = el.checked
+            ? (Array.isArray(q.correct) ? q.correct : [q.correct].filter(x => x != null))
+            : (Array.isArray(q.correct) ? (q.correct[0] ?? 0) : q.correct);
+          if (!q.pointsMode) q.pointsMode = 'all';
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-pointsmode]').forEach(el => {
+        el.onchange = () => {
+          const qi = Number(el.dataset.pointsmode);
+          const q = flat[qi];
+          if (!q) return;
+          q.pointsMode = el.value;
+          const card = el.closest('[data-gidx]') || el.closest('.builder-fill') || el.closest('.table-fill-single') || el.parentElement;
+          const eachPts = card?.querySelector?.('.tf-each-pts') || document.querySelector(`.tf-each-pts input[data-points-each="${qi}"]`)?.closest('.tf-each-pts');
+          const ptsInp = box.querySelector(`[data-points="${qi}"]`);
+          if (el.value === 'each') {
+            if (eachPts) eachPts.style.display = '';
+            // auto total from blanks count
+            let blankN = 0;
+            if (q.type === 'fill' && Array.isArray(q.parts)) blankN = q.parts.filter(p => p.kind === 'blank').length;
+            else if (q.type === 'table' && q.cells) blankN = Object.keys(q.cells).filter(k => q.cells[k] && q.cells[k].blank).length;
+            else if (q.blanks) blankN = q.blanks.length;
+            const per = Number(q.pointsPerItem) || 1;
+            if (ptsInp) {
+              ptsInp.value = blankN * per;
+              ptsInp.readOnly = true;
+              q.points = blankN * per;
+            }
+          } else {
+            if (eachPts) eachPts.style.display = 'none';
+            if (ptsInp) ptsInp.readOnly = false;
+          }
+          // full re-render keeps labels consistent
+          if (window._renderAssessmentBuilder) window._renderAssessmentBuilder();
+        };
+      });
+      
+      // Fill-in-the-blank segments builder
+      const syncFibParts = (gi) => {
+        const q = (window._builderQuestions || [])[gi];
+        if (!q) return;
+        // rebuild blanks/template from parts for grading compatibility
+        const parts = q.parts || [];
+        const blanks = [];
+        let tpl = '';
+        parts.forEach((s) => {
+          if (s.kind === 'blank') {
+            const id = s.id || String(blanks.length + 1);
+            blanks.push({ id, correct: s.correct || '', alternatives: s.alternatives || [] });
+            tpl += '{{' + id + '}}';
+          } else {
+            tpl += s.text || '';
+          }
+        });
+        q.blanks = blanks;
+        q.template = tpl;
+        q.sentence = tpl;
+        q.prompt = q.prompt || tpl;
+      };
+      box.querySelectorAll('[data-fib-add-text]').forEach(el => {
+        el.onclick = () => {
+          const gi = Number(el.dataset.fibAddText);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q) return;
+          q.parts = q.parts || [];
+          q.parts.push({ kind: 'text', text: '' });
+          syncFibParts(gi);
+          if (window._renderAssessmentBuilder) window._renderAssessmentBuilder();
+        };
+      });
+      box.querySelectorAll('[data-fib-add-blank]').forEach(el => {
+        el.onclick = () => {
+          const gi = Number(el.dataset.fibAddBlank);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q) return;
+          q.parts = q.parts || [];
+          const id = String((q.parts.filter(p => p.kind === 'blank').length) + 1);
+          q.parts.push({ kind: 'blank', id, correct: '', alternatives: [] });
+          syncFibParts(gi);
+          if (window._renderAssessmentBuilder) window._renderAssessmentBuilder();
+        };
+      });
+      box.querySelectorAll('[data-fib-text]').forEach(el => {
+        el.oninput = () => {
+          const [gi, si] = el.dataset.fibText.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (q && q.parts && q.parts[si]) { q.parts[si].text = el.value; syncFibParts(gi); }
+        };
+      });
+      box.querySelectorAll('[data-fib-correct]').forEach(el => {
+        el.oninput = () => {
+          const [gi, si] = el.dataset.fibCorrect.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (q && q.parts && q.parts[si]) { q.parts[si].correct = el.value; syncFibParts(gi); }
+        };
+      });
+      box.querySelectorAll('[data-fib-del-seg]').forEach(el => {
+        el.onclick = () => {
+          const [gi, si] = el.dataset.fibDelSeg.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (q && q.parts) {
+            q.parts.splice(si, 1);
+            syncFibParts(gi);
+            if (window._renderAssessmentBuilder) window._renderAssessmentBuilder();
+          }
+        };
+      });
+      box.querySelectorAll('[data-fib-alt-pop]').forEach(el => {
+        el.onclick = async () => {
+          const [gi, si] = el.dataset.fibAltPop.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q || !q.parts || !q.parts[si]) return;
+          const cur = (q.parts[si].alternatives || []).join(', ');
+          const v = await UI.prompt('Alternate answers (comma-separated):', cur, 'Alternate answers', 'ans1, ans2');
+          if (v == null) return;
+          q.parts[si].alternatives = String(v).split(',').map(s => s.trim()).filter(Boolean);
+          syncFibParts(gi);
+        };
+      });
+      box.querySelectorAll('[data-tf-show-calc]').forEach(el => {
+        el.onchange = () => {
+          const gi = Number(el.dataset.tfShowCalc);
+          const q = (window._builderQuestions || [])[gi];
+          if (q) q.showCalculator = !!el.checked;
+        };
+      });
+      box.querySelectorAll('[data-tf-subheader]').forEach(el => {
+        el.oninput = () => {
+          const gi = Number(el.dataset.tfSubheader);
+          const q = (window._builderQuestions || [])[gi];
+          if (q) q.subheaders = String(el.value || '').split('|').map(s => s.trim());
+        };
+      });
+
+      box.querySelectorAll('[data-points]').forEach(el => {
+        el.oninput = () => { const q = flat[Number(el.dataset.points)]; if (q) q.points = Number(el.value) || 1; };
+      });
+      box.querySelectorAll('[data-modified]').forEach(el => {
+        el.oninput = () => { const q = flat[Number(el.dataset.modified)]; if (q) q.modifiedAnswer = el.value; };
+      });
+      box.querySelectorAll('[data-modified-alt]').forEach(el => {
+        el.oninput = () => {
+          const q = flat[Number(el.dataset.modifiedAlt)];
+          if (q) q.modifiedAlternatives = el.value.split(',').map(s => s.trim()).filter(Boolean);
+        };
+      });
+      box.querySelectorAll('[data-correct-text]').forEach(el => {
+        el.oninput = () => { const q = flat[Number(el.dataset.correctText)]; if (q) q.correct = el.value; };
+      });
+
+      // Word box builder handlers (inline sentence blanks)
+      box.querySelectorAll('[data-wb-sentence]').forEach(el => {
+        el.oninput = () => {
+          const gi = Number(el.dataset.wbSentence);
+          const q = flat[gi];
+          if (!q) return;
+          q.sentence = el.value;
+          // Auto-detect {{n}} markers and ensure blanks exist
+          const ids = [...el.value.matchAll(/\{\{(\d+)\}\}/g)].map(m => m[1]);
+          q.blanks = q.blanks || [];
+          ids.forEach(id => {
+            if (!q.blanks.some(b => String(b.id) === String(id))) {
+              q.blanks.push({ id: String(id), correct: '', alternatives: [] });
+            }
+          });
+        };
+      });
+      
+      box.querySelectorAll('[data-wb-add-q]').forEach(el => {
+        el.onclick = () => {
+          const gi = Number(el.dataset.wbAddQ);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q) return;
+          q.questions = q.questions || [];
+          q.questions.push({ id: 'wbq' + Date.now(), type: 'wordbox', prompt: '', sentence: '', blanks: [] });
+          if (window._renderAssessmentBuilder) window._renderAssessmentBuilder();
+        };
+      });
+      box.querySelectorAll('[data-wb-child-prompt]').forEach(el => {
+        el.oninput = () => {
+          const [gi, ki] = el.dataset.wbChildPrompt.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (q && q.questions && q.questions[ki]) q.questions[ki].prompt = el.value;
+        };
+      });
+      box.querySelectorAll('[data-wb-child-sentence]').forEach(el => {
+        el.oninput = () => {
+          const [gi, ki] = el.dataset.wbChildSentence.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q || !q.questions || !q.questions[ki]) return;
+          const kq = q.questions[ki];
+          let raw = el.value || '';
+          const bank = (q.wordBank || []).map(w => String(w || '').trim()).filter(Boolean);
+          // Auto-resolve {word} that matches bank → keep as {MatchedWord}
+          raw = raw.replace(/\{([^{}]*)\}/g, (m, inner) => {
+            const w = String(inner || '').trim();
+            if (!w) return '{}';
+            const hit = bank.find(b => b.toLowerCase() === w.toLowerCase());
+            return hit ? ('{' + hit + '}') : ('{' + w + '}');
+          });
+          kq.sentence = raw;
+          // Build blanks from {Word} tokens
+          const blanks = [];
+          let bi = 0;
+          String(raw).replace(/\{([^{}]+)\}/g, (m, word) => {
+            bi += 1;
+            blanks.push({ id: String(bi), correct: String(word).trim(), alternatives: [] });
+            return m;
+          });
+          kq.blanks = blanks;
+          // Live preview highlight
+          const prev = box.querySelector(`[data-wb-preview="${gi}:${ki}"]`);
+          if (prev) {
+            let html = (raw || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            html = html.replace(/\{([^{}]+)\}/g, (m, word) => {
+              const w = String(word).trim();
+              const hit = bank.find(b => b.toLowerCase() === w.toLowerCase());
+              if (hit) return '<span class="wb-ans-hl">' + hit.replace(/</g,'') + '</span>';
+              return '<span class="wb-ans-slot">{}</span>';
+            });
+            prev.innerHTML = html || '<span class="text-muted">Type the sentence here…</span>';
+          }
+        };
+      });
+      box.querySelectorAll('[data-wb-child-blank]').forEach(el => {
+        el.onclick = () => {
+          const [gi, ki] = el.dataset.wbChildBlank.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q || !q.questions || !q.questions[ki]) return;
+          const kq = q.questions[ki];
+          kq.blanks = kq.blanks || [];
+          const id = String(kq.blanks.length + 1);
+          kq.blanks.push({ id, correct: '' });
+          kq.sentence = (kq.sentence || '') + ' {{' + id + '}}';
+          if (window._renderAssessmentBuilder) window._renderAssessmentBuilder();
+        };
+      });
+      box.querySelectorAll('[data-wb-child-del]').forEach(el => {
+        el.onclick = () => {
+          const [gi, ki] = el.dataset.wbChildDel.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (q && q.questions) {
+            q.questions.splice(ki, 1);
+            if (window._renderAssessmentBuilder) window._renderAssessmentBuilder();
+          }
+        };
+      });
+
+      box.querySelectorAll('[data-wb-bank]').forEach(el => {
+        el.oninput = () => {
+          const [gi, bi] = el.dataset.wbBank.split(':').map(Number);
+          const q = flat[gi];
+          if (!q) return;
+          q.wordBank = q.wordBank || [];
+          q.wordBank[bi] = el.value;
+        };
+      });
+      const wbResize = (gi, dRows, dCols) => {
+        const q = flat[gi];
+        if (!q) return;
+        const rows = Math.min(8, Math.max(1, (Number(q.wordBankRows) || 2) + dRows));
+        const cols = Math.min(8, Math.max(1, (Number(q.wordBankCols) || 4) + dCols));
+        q.wordBankRows = rows;
+        q.wordBankCols = cols;
+        q.wordBank = q.wordBank || [];
+        while (q.wordBank.length < rows * cols) q.wordBank.push('');
+        q.wordBank = q.wordBank.slice(0, rows * cols);
+        syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+      };
+      box.querySelectorAll('[data-wb-add-row]').forEach(el => {
+        el.onclick = () => wbResize(Number(el.dataset.wbAddRow), 1, 0);
+      });
+      box.querySelectorAll('[data-wb-del-row]').forEach(el => {
+        el.onclick = () => wbResize(Number(el.dataset.wbDelRow), -1, 0);
+      });
+      box.querySelectorAll('[data-wb-add-col]').forEach(el => {
+        el.onclick = () => wbResize(Number(el.dataset.wbAddCol), 0, 1);
+      });
+      box.querySelectorAll('[data-wb-del-col]').forEach(el => {
+        el.onclick = () => wbResize(Number(el.dataset.wbDelCol), 0, -1);
+      });
+      box.querySelectorAll('[data-wb-add-word]').forEach(el => {
+        el.onclick = () => {
+          const gi = Number(el.dataset.wbAddWord);
+          const q = flat[gi];
+          if (!q) return;
+          q.wordBank = q.wordBank || [];
+          q.wordBank.push('');
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-wb-insert-blank]').forEach(el => {
+        el.onclick = () => {
+          const gi = Number(el.dataset.wbInsertBlank);
+          const q = flat[gi];
+          if (!q) return;
+          q.blanks = q.blanks || [];
+          const nextId = String((q.blanks.reduce((m, b) => Math.max(m, Number(b.id) || 0), 0) || 0) + 1);
+          q.sentence = (q.sentence || '') + ' {{' + nextId + '}}';
+          q.blanks.push({ id: nextId, correct: '', alternatives: [] });
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-wb-blank-correct]').forEach(el => {
+        el.oninput = () => {
+          const [gi, bi] = el.dataset.wbBlankCorrect.split(':').map(Number);
+          if (flat[gi]?.blanks?.[bi]) flat[gi].blanks[bi].correct = el.value;
+        };
+      });
+      box.querySelectorAll('[data-wb-blank-alt]').forEach(el => {
+        el.oninput = () => {
+          const [gi, bi] = el.dataset.wbBlankAlt.split(':').map(Number);
+          if (flat[gi]?.blanks?.[bi]) flat[gi].blanks[bi].alternatives = el.value.split(',').map(s => s.trim()).filter(Boolean);
+        };
+      });
+      box.querySelectorAll('[data-wb-del-blank]').forEach(el => {
+        el.onclick = () => {
+          const [gi, bi] = el.dataset.wbDelBlank.split(':').map(Number);
+          const q = flat[gi];
+          if (!q?.blanks?.[bi]) return;
+          const id = q.blanks[bi].id;
+          q.blanks.splice(bi, 1);
+          q.sentence = (q.sentence || '').replace(new RegExp('\\{\\{' + id + '\\}\\}', 'g'), '');
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+
+    };
+
+
+
+    // (builder sections already initialized at top of showCreateExam)
+    // Expose for footer handlers (avoids nested-scope issues)
+    if (typeof openTypePicker === 'function') window._lvccOpenTypePicker = openTypePicker;
+    if (typeof addSectionOfType === 'function') window._lvccAddSectionOfType = addSectionOfType;
+
+    clearInterval(window._autosaveIv);
+    window._autosaveIv = setInterval(() => this.saveAutosave(), 4000);
+    window.addEventListener('beforeunload', () => this.saveAutosave());
+
+    
+      box.querySelectorAll('[data-wb-resize]').forEach(el => {
+        el.onclick = () => {
+          const gi = Number(el.dataset.wbResize);
+          const q = flat[gi];
+          if (!q) return;
+          const rows = Number(box.querySelector(`[data-wb-rows="${gi}"]`)?.value) || 2;
+          const cols = Number(box.querySelector(`[data-wb-cols="${gi}"]`)?.value) || 2;
+          q.wordBankRows = rows; q.wordBankCols = cols;
+          q.wordBank = q.wordBank || [];
+          while (q.wordBank.length < rows * cols) q.wordBank.push('');
+          q.wordBank = q.wordBank.slice(0, rows * cols);
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      // Config: drag word chip onto blank rectangle
+      box.querySelectorAll('[data-wb-chip]').forEach(chip => {
+        chip.addEventListener('dragstart', (e) => {
+          const inp = chip.querySelector('input');
+          const word = (inp && inp.value) || chip.getAttribute('data-word') || '';
+          e.dataTransfer.setData('text/plain', word);
+        });
+      });
+      box.querySelectorAll('[data-wb-drop-blank]').forEach(zone => {
+        zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag-over'); });
+        zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+        zone.addEventListener('drop', (e) => {
+          e.preventDefault();
+          zone.classList.remove('drag-over');
+          const word = (e.dataTransfer.getData('text/plain') || '').trim();
+          if (!word) return;
+          const [gi, bid] = zone.dataset.wbDropBlank.split(':');
+          const q = flat[Number(gi)];
+          if (!q) return;
+          q.blanks = q.blanks || [];
+          let b = q.blanks.find(x => String(x.id) === String(bid));
+          if (!b) { b = { id: String(bid), correct: '', alternatives: [] }; q.blanks.push(b); }
+          b.correct = word;
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        });
+      });
+      // Fill handlers
+      box.querySelectorAll('[data-fill-sentence]').forEach(el => {
+        el.oninput = () => {
+          const gi = Number(el.dataset.fillSentence);
+          const q = flat[gi]; if (!q) return;
+          q.sentence = el.value;
+          const ids = [...el.value.matchAll(/\{\{(\d+)\}\}/g)].map(m => m[1]);
+          q.blanks = q.blanks || [];
+          ids.forEach(id => { if (!q.blanks.some(b => String(b.id) === String(id))) q.blanks.push({ id: String(id), correct: '', alternatives: [] }); });
+        };
+      });
+      box.querySelectorAll('[data-fill-insert]').forEach(el => {
+        el.onclick = () => {
+          const gi = Number(el.dataset.fillInsert);
+          const q = flat[gi]; if (!q) return;
+          q.blanks = q.blanks || [];
+          const nextId = String((q.blanks.reduce((m, b) => Math.max(m, Number(b.id) || 0), 0) || 0) + 1);
+          q.sentence = (q.sentence || '') + ' {{' + nextId + '}}';
+          q.blanks.push({ id: nextId, correct: '', alternatives: [] });
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-fill-correct]').forEach(el => {
+        el.oninput = () => {
+          const [gi, bi] = el.dataset.fillCorrect.split(':').map(Number);
+          if (flat[gi]?.blanks?.[bi]) flat[gi].blanks[bi].correct = el.value;
+        };
+      });
+      box.querySelectorAll('[data-fill-alt]').forEach(el => {
+        el.oninput = () => {
+          const [gi, bi] = el.dataset.fillAlt.split(':').map(Number);
+          if (flat[gi]?.blanks?.[bi]) flat[gi].blanks[bi].alternatives = el.value.split(',').map(s => s.trim()).filter(Boolean);
+        };
+      });
+      box.querySelectorAll('[data-fill-del]').forEach(el => {
+        el.onclick = () => {
+          const [gi, bi] = el.dataset.fillDel.split(':').map(Number);
+          const q = flat[gi]; if (!q?.blanks?.[bi]) return;
+          const id = q.blanks[bi].id;
+          q.blanks.splice(bi, 1);
+          q.sentence = (q.sentence || '').replace(new RegExp('\\{\\{' + id + '\\}\\}', 'g'), '');
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+
+      // Resolve question live (avoid stale flat closure)
+      const qAt = (gi) => (window._builderQuestions || [])[Number(gi)] || null;
+      const readFileAsDataUrl = (file) => new Promise((resolve, reject) => {
+        if (!file) return resolve(null);
+        if (file.size > 1.5 * 1024 * 1024) {
+          if (window.UI) UI.alert('Image is too large (max ~1.5MB).', 'Image');
+          return resolve(null);
+        }
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+
+      // Categorize: live-update category dropdown labels when category names change
+      box.querySelectorAll('[data-cat-col-name]').forEach(el => {
+        el.oninput = () => {
+          const [qi, ci] = el.dataset.catColName.split(':').map(Number);
+          const q = (window._builderQuestions || [])[qi];
+          if (!q || !q.categories || !q.categories[ci]) return;
+          q.categories[ci].name = el.value;
+          // Update all item selects' option text for this category id
+          const catId = q.categories[ci].id;
+          box.querySelectorAll(`[data-cat-item-cat^="${qi}:"] option`).forEach(opt => {
+            if (opt.value === catId || opt.value === String(ci)) opt.textContent = el.value || ('Category ' + (ci+1));
+          });
+          try { App.pushBuilderHistory(false); } catch (_) {}
+        };
+      });
+
+      // Passage
+      box.querySelectorAll('[data-pass-html]').forEach(el => {
+        el.oninput = () => { const q = qAt(el.dataset.passHtml); if (q) { q.passageHtml = el.innerHTML; if (q.passages && q.passages[0]) q.passages[0].html = el.innerHTML; } };
+        el.onblur = () => { const q = qAt(el.dataset.passHtml); if (q) { q.passageHtml = el.innerHTML; if (q.passages && q.passages[0]) q.passages[0].html = el.innerHTML; } };
+      });
+      box.querySelectorAll('[data-rte]').forEach(btn => {
+        btn.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const [gi, cmd] = btn.dataset.rte.split(':');
+          const ed = box.querySelector(`[data-pass-html="${gi}"]`);
+          if (!ed) return;
+          ed.focus();
+          if (cmd === 'bold') document.execCommand('bold');
+          else if (cmd === 'italic') document.execCommand('italic');
+          else if (cmd === 'underline') document.execCommand('underline');
+          else if (cmd === 'h2') document.execCommand('formatBlock', false, 'h2');
+          else if (cmd === 'h3') document.execCommand('formatBlock', false, 'h3');
+          else if (cmd === 'left') document.execCommand('justifyLeft');
+          else if (cmd === 'center') document.execCommand('justifyCenter');
+          else if (cmd === 'right') document.execCommand('justifyRight');
+          else if (cmd === 'justify') document.execCommand('justifyFull');
+          else if (cmd === 'image') {
+            const url = window.prompt('Image URL');
+            if (url) document.execCommand('insertImage', false, url);
+          }
+          const q = qAt(gi); if (q) { q.passageHtml = ed.innerHTML; if (q.passages && q.passages[0]) q.passages[0].html = ed.innerHTML; }
+        };
+      });
+      box.querySelectorAll('[data-pass-upload]').forEach(inp => {
+        inp.onchange = async () => {
+          const gi = Number(inp.dataset.passUpload);
+          const dataUrl = await readFileAsDataUrl(inp.files && inp.files[0]);
+          if (!dataUrl) return;
+          const ed = box.querySelector(`[data-pass-html="${gi}"]`);
+          if (ed) {
+            ed.focus();
+            document.execCommand('insertImage', false, dataUrl);
+            // Make newly inserted images resizable
+            setTimeout(() => {
+              ed.querySelectorAll('img').forEach(img => {
+                if (img.dataset.resizable) return;
+                img.dataset.resizable = '1';
+                img.style.maxWidth = '100%';
+                img.style.cursor = 'pointer';
+                img.title = 'Click for Wrap Text · drag corner to resize';
+                img.addEventListener('click', (ev) => {
+                  if (ev.offsetX >= img.clientWidth - 16 && ev.offsetY >= img.clientHeight - 16) return;
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  document.getElementById('img-wrap-pop')?.remove();
+                  const pop = document.createElement('div');
+                  pop.id = 'img-wrap-pop';
+                  pop.className = 'img-wrap-popover';
+                  pop.innerHTML = `<div class="img-wrap-title">Wrap Text</div>
+                    ${['In line with text','Square','Tight','Through','Top and bottom','Behind text','In front of text'].map(opt =>
+                      `<button type="button" class="img-wrap-opt" data-wrap="${opt}">${opt}</button>`
+                    ).join('')}`;
+                  const rect = img.getBoundingClientRect();
+                  pop.style.left = Math.min(window.innerWidth - 200, rect.left) + 'px';
+                  pop.style.top = (rect.bottom + 4) + 'px';
+                  document.body.appendChild(pop);
+                  pop.querySelectorAll('[data-wrap]').forEach(b => {
+                    b.onclick = () => {
+                      const w = b.getAttribute('data-wrap');
+                      img.style.float = '';
+                      img.style.display = '';
+                      img.style.position = '';
+                      img.style.zIndex = '';
+                      img.style.margin = '0.5rem';
+                      if (w === 'In line with text') { img.style.display = 'inline-block'; img.style.verticalAlign = 'middle'; }
+                      else if (w === 'Square' || w === 'Tight' || w === 'Through') { img.style.float = 'left'; }
+                      else if (w === 'Top and bottom') { img.style.display = 'block'; img.style.marginLeft = 'auto'; img.style.marginRight = 'auto'; }
+                      else if (w === 'Behind text') { img.style.position = 'relative'; img.style.zIndex = '0'; img.style.opacity = '0.85'; }
+                      else if (w === 'In front of text') { img.style.position = 'relative'; img.style.zIndex = '2'; }
+                      const q = qAt(gi);
+                      if (q) {
+                        q.passageHtml = ed.innerHTML;
+                        const ti = Number(ed.dataset.passActiveTab || 0);
+                        if (q.passages && q.passages[ti]) q.passages[ti].html = ed.innerHTML;
+                      }
+                      pop.remove();
+                    };
+                  });
+                  const close = (e2) => { if (!pop.contains(e2.target)) { pop.remove(); document.removeEventListener('click', close); } };
+                  setTimeout(() => document.addEventListener('click', close), 10);
+                });
+                let startX, startW;
+                img.addEventListener('mousedown', (ev) => {
+                  if (ev.offsetX < img.clientWidth - 16 || ev.offsetY < img.clientHeight - 16) return;
+                  ev.preventDefault();
+                  startX = ev.clientX;
+                  startW = img.clientWidth;
+                  const move = (e2) => {
+                    const nw = Math.max(80, Math.min(ed.clientWidth - 20, startW + (e2.clientX - startX)));
+                    img.style.width = nw + 'px';
+                    img.style.height = 'auto';
+                  };
+                  const up = () => {
+                    document.removeEventListener('mousemove', move);
+                    document.removeEventListener('mouseup', up);
+                    const q = qAt(gi);
+                    if (q) {
+                      q.passageHtml = ed.innerHTML;
+                      const ti = Number(ed.dataset.passActiveTab || 0);
+                      if (q.passages && q.passages[ti]) q.passages[ti].html = ed.innerHTML;
+                    }
+                  };
+                  document.addEventListener('mousemove', move);
+                  document.addEventListener('mouseup', up);
+                });
+              });
+            }, 50);
+            const q = qAt(gi);
+            if (q) { q.passageHtml = ed.innerHTML; if (q.passages && q.passages[0]) q.passages[0].html = ed.innerHTML; }
+          }
+          inp.value = '';
+        };
+      });
+      
+      box.querySelectorAll('[data-pass-add-tab]').forEach(el => {
+        el.onclick = () => {
+          const gi = Number(el.dataset.passAddTab);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q) return;
+          q.passages = q.passages || [{ id: 'p1', title: 'Passage 1', html: q.passageHtml || '' }];
+          const n = q.passages.length + 1;
+          q.passages.push({ id: 'p' + n, title: 'Passage ' + n, html: '<p></p>' });
+          if (typeof renderBuilder === 'function') renderBuilder();
+          else if (window._renderAssessmentBuilder) window._renderAssessmentBuilder();
+        };
+      });
+      box.querySelectorAll('[data-pass-tab-cfg]').forEach(el => {
+        el.onclick = () => {
+          const [gi, ti] = el.dataset.passTabCfg.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q || !q.passages) return;
+          const wrap = el.closest('.passage-dual');
+          if (!wrap) return;
+          const ed = wrap.querySelector('.rte-editor');
+          const cur = Number(ed?.dataset.passActiveTab || 0);
+          if (ed && q.passages[cur]) {
+            q.passages[cur].html = ed.innerHTML;
+            if (cur === 0) q.passageHtml = ed.innerHTML;
+          }
+          wrap.querySelectorAll('[data-pass-tab-cfg]').forEach(b => b.classList.remove('active'));
+          el.classList.add('active');
+          if (ed && q.passages[ti]) {
+            ed.innerHTML = q.passages[ti].html || '';
+            ed.dataset.passActiveTab = String(ti);
+          }
+        };
+        el.ondblclick = async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const [gi, ti] = el.dataset.passTabCfg.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q || !q.passages || !q.passages[ti]) return;
+          const cur = q.passages[ti].title || ('Passage ' + (ti + 1));
+          const name = await UI.prompt('Rename passage tab:', cur, 'Rename passage', cur);
+          if (name == null) return;
+          q.passages[ti].title = String(name).trim() || cur;
+          el.textContent = q.passages[ti].title;
+        };
+      });
+
+      box.querySelectorAll('[data-pass-add-q]').forEach(el => {
+        el.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const gi = Number(el.dataset.passAddQ);
+          const q = qAt(gi);
+          if (!q) return;
+          q.questions = Array.isArray(q.questions) ? q.questions : [];
+          q.questions.push({ id: 'pq' + Date.now(), type: 'multiple', prompt: '', options: ['', '', '', ''], correct: 0, points: 1 });
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      
+      box.querySelectorAll('[data-pass-q-points]').forEach(el => {
+        el.oninput = () => {
+          const [gi, ki] = el.dataset.passQPoints.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (q && q.questions && q.questions[ki]) q.questions[ki].points = Number(el.value) || 1;
+        };
+      });
+      box.querySelectorAll('[data-pass-q-multi]').forEach(el => {
+        el.onchange = () => {
+          const [gi, ki] = el.dataset.passQMulti.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (q && q.questions && q.questions[ki]) q.questions[ki].multiCorrect = !!el.checked;
+        };
+      });
+
+      box.querySelectorAll('[data-pass-q-prompt]').forEach(el => {
+        el.oninput = () => {
+          const [gi, ki] = el.dataset.passQPrompt.split(':').map(Number);
+          const q = qAt(gi); if (q?.questions?.[ki]) q.questions[ki].prompt = el.value;
+        };
+      });
+      box.querySelectorAll('[data-pass-q-type]').forEach(el => {
+        el.onchange = () => {
+          const [gi, ki] = el.dataset.passQType.split(':').map(Number);
+          const q = qAt(gi); const kq = q?.questions?.[ki]; if (!kq) return;
+          kq.type = el.value;
+          if (el.value === 'multiple' && !kq.options) kq.options = ['', '', '', ''];
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-pass-opt]').forEach(el => {
+        el.oninput = () => {
+          const [gi, ki, oi] = el.dataset.passOpt.split(':').map(Number);
+          const q = qAt(gi); if (!q?.questions?.[ki]) return;
+          q.questions[ki].options = q.questions[ki].options || [];
+          q.questions[ki].options[oi] = el.value;
+        };
+      });
+      box.querySelectorAll('[data-pass-correct]').forEach(el => {
+        el.onchange = () => {
+          const [gi, ki, oi] = el.dataset.passCorrect.split(':').map(Number);
+          const q = qAt(gi); if (q?.questions?.[ki]) q.questions[ki].correct = oi;
+        };
+      });
+      box.querySelectorAll('[data-pass-add-opt]').forEach(el => {
+        el.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const [gi, ki] = el.dataset.passAddOpt.split(':').map(Number);
+          const q = qAt(gi); const kq = q?.questions?.[ki]; if (!kq) return;
+          kq.options = kq.options || []; kq.options.push('');
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-pass-del-opt]').forEach(el => {
+        el.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const [gi, ki, oi] = el.dataset.passDelOpt.split(':').map(Number);
+          const q = qAt(gi); const kq = q?.questions?.[ki]; if (!kq?.options) return;
+          kq.options.splice(oi, 1); syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-pass-rubric]').forEach(el => {
+        el.oninput = () => {
+          const [gi, ki] = el.dataset.passRubric.split(':').map(Number);
+          const q = qAt(gi); if (q?.questions?.[ki]) q.questions[ki].correct = el.value;
+        };
+      });
+      box.querySelectorAll('[data-pass-del-q]').forEach(el => {
+        el.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const [gi, ki] = el.dataset.passDelQ.split(':').map(Number);
+          const q = qAt(gi); if (!q?.questions) return;
+          q.questions.splice(ki, 1); syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+
+      // Categorize
+      box.querySelectorAll('[data-cat-add]').forEach(el => {
+        el.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const gi = Number(el.dataset.catAdd);
+          const q = qAt(gi); if (!q) return;
+          if (q.categories && q.categories.length && typeof q.categories[0] === 'string') {
+            q.categories = q.categories.map((name, i) => ({ id: 'c' + (i + 1), name: String(name) }));
+          }
+          q.categories = q.categories || [];
+          q.categories.push({ id: 'c' + Date.now(), name: 'Category ' + (q.categories.length + 1) });
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-cat-add-item]').forEach(el => {
+        el.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const gi = Number(el.dataset.catAddItem);
+          const q = qAt(gi); if (!q) return;
+          if (q.categories && q.categories.length && typeof q.categories[0] === 'string') {
+            q.categories = q.categories.map((name, i) => ({ id: 'c' + (i + 1), name: String(name) }));
+          }
+          if (q.items && q.items.length && typeof q.items[0] === 'string') {
+            const fc = (q.categories[0] && q.categories[0].id) || '';
+            q.items = q.items.map((name, i) => ({ id: 'i' + (i + 1), name: String(name), category: fc }));
+          }
+          q.items = q.items || [];
+          const firstCat = (q.categories && q.categories[0] && q.categories[0].id) || '';
+          q.items.push({ id: 'i' + Date.now(), name: '', category: firstCat, image: '' });
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+          setTimeout(() => {
+            const rows = document.querySelectorAll(`[data-cat-item-name^="${gi}:"]`);
+            const last = rows[rows.length - 1];
+            if (last) { last.scrollIntoView({ behavior: 'smooth', block: 'center' }); try { last.focus(); } catch(_){} }
+          }, 50);
+        };
+      });
+      box.querySelectorAll('[data-cat-name]').forEach(el => {
+        el.oninput = () => {
+          const [gi, ci] = el.dataset.catName.split(':').map(Number);
+          const q = qAt(gi); if (q?.categories?.[ci]) q.categories[ci].name = el.value;
+          const catId = q?.categories?.[ci]?.id;
+          const label = el.value || ('Category ' + (ci + 1));
+          box.querySelectorAll(`[data-cat-item-cat^="${gi}:"] option`).forEach(opt => {
+            if (catId && (opt.value === catId || opt.value === String(ci))) opt.textContent = label;
+          });
+          // Auto-compute total points from items × points per item
+          const per = Number(q?.pointsPerItem) || 1;
+          const n = (q?.items || []).length;
+          if (q && q.pointsMode !== 'manual') {
+            q.points = n * per;
+            const pts = box.querySelector(`[data-points="${gi}"]`);
+            if (pts) pts.value = q.points;
+          }
+        };
+      });
+      box.querySelectorAll('[data-cat-del]').forEach(el => {
+        el.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const [gi, ci] = el.dataset.catDel.split(':').map(Number);
+          const q = qAt(gi); if (!q?.categories) return;
+          q.categories.splice(ci, 1); syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-cat-item-name]').forEach(el => {
+        el.oninput = () => {
+          const [gi, ii] = el.dataset.catItemName.split(':').map(Number);
+          const q = qAt(gi); if (q?.items?.[ii]) q.items[ii].name = el.value;
+        };
+      });
+      box.querySelectorAll('[data-cat-item-cat]').forEach(el => {
+        el.onchange = () => {
+          const [gi, ii] = el.dataset.catItemCat.split(':').map(Number);
+          const q = qAt(gi); if (q?.items?.[ii]) q.items[ii].category = el.value;
+        };
+      });
+      box.querySelectorAll('[data-cat-item-img]').forEach(inp => {
+        inp.onchange = async () => {
+          const [gi, ii] = inp.dataset.catItemImg.split(':').map(Number);
+          const q = qAt(gi); if (!q?.items?.[ii]) return;
+          const dataUrl = await readFileAsDataUrl(inp.files && inp.files[0]);
+          if (!dataUrl) return;
+          q.items[ii].image = dataUrl;
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-cat-item-del]').forEach(el => {
+        el.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const [gi, ii] = el.dataset.catItemDel.split(':').map(Number);
+          const q = qAt(gi); if (!q?.items) return;
+          q.items.splice(ii, 1); syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+
+
+      box.querySelectorAll('[data-points-each]').forEach(el => {
+        el.oninput = () => {
+          const qi = Number(el.dataset.pointsEach);
+          const q = (window._builderQuestions || [])[qi];
+          if (!q) return;
+          q.pointsPerItem = el.value === '' ? null : Number(el.value);
+          if ((q.pointsMode || 'all') === 'each' || q.type === 'categorize') {
+            let blankN = 0;
+            if (q.type === 'fill' && Array.isArray(q.parts)) blankN = q.parts.filter(p => p.kind === 'blank').length;
+            else if (q.type === 'table' && q.cells) blankN = Object.keys(q.cells).filter(k => q.cells[k] && q.cells[k].blank).length;
+            else if (q.type === 'categorize') blankN = (q.items || []).length;
+            else if (q.blanks) blankN = q.blanks.length;
+            const per = Number(q.pointsPerItem) || 1;
+            q.points = blankN * per;
+            const ptsInp = box.querySelector(`[data-points="${qi}"]`);
+            if (ptsInp) ptsInp.value = q.points;
+          }
+        };
+      });
+      box.querySelectorAll('[data-correct-alt]').forEach(el => {
+        el.oninput = () => {
+          const q = (window._builderQuestions || [])[Number(el.dataset.correctAlt)];
+          if (q) q.alternatives = el.value.split(',').map(s => s.trim()).filter(Boolean);
+        };
+      });
+      box.querySelectorAll('[data-cat-item-del-img]').forEach(el => {
+        el.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const [gi, ii] = el.dataset.catItemDelImg.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (q?.items?.[ii]) { q.items[ii].image = ''; syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder(); }
+        };
+      });
+      // Table fill config — single panel: add/remove col/row/subheader + alt popup
+      box.querySelectorAll('[data-tf-add-col]').forEach(el => {
+        el.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const gi = Number(el.dataset.tfAddCol);
+          const q = (window._builderQuestions || [])[gi]; if (!q) return;
+          if (typeof Regular.ensureTableLayout === 'function') Regular.ensureTableLayout(q);
+          if ((q.cols || 3) >= 10) return;
+          q.cols = (q.cols || 3) + 1;
+          if (typeof Regular.ensureTableLayout === 'function') Regular.ensureTableLayout(q);
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-tf-del-col]').forEach(el => {
+        el.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const gi = Number(el.dataset.tfDelCol);
+          const q = (window._builderQuestions || [])[gi]; if (!q) return;
+          if (typeof Regular.ensureTableLayout === 'function') Regular.ensureTableLayout(q);
+          if ((q.cols || 3) <= 1) return;
+          q.cols = (q.cols || 3) - 1;
+          Object.keys(q.cells || {}).forEach(k => {
+            const parts = k.split('-').map(Number);
+            if (parts[1] >= q.cols) delete q.cells[k];
+          });
+          if (typeof Regular.ensureTableLayout === 'function') Regular.ensureTableLayout(q);
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      
+      box.querySelectorAll('[data-cc-lang]').forEach(el => {
+        el.onchange = () => {
+          const gi = Number(el.dataset.ccLang);
+          const q = (window._builderQuestions || [])[gi];
+          if (q) q.language = el.value;
+        };
+      });
+      box.querySelectorAll('[data-cc-code]').forEach(el => {
+        el.oninput = () => {
+          const gi = Number(el.dataset.ccCode);
+          const q = (window._builderQuestions || [])[gi];
+          if (q) q.codeTemplate = el.value;
+        };
+      });
+      box.querySelectorAll('[data-cc-make-blank]').forEach(btn => {
+        btn.onclick = () => {
+          const gi = Number(btn.dataset.ccMakeBlank);
+          const q = (window._builderQuestions || [])[gi];
+          const ta = box.querySelector(`[data-cc-code="${gi}"]`);
+          if (!q || !ta) return;
+          const start = ta.selectionStart, end = ta.selectionEnd;
+          if (start === end) {
+            UI.alert('Highlight the code that should be blank for students, then click Make blank.', 'Complete the Code');
+            return;
+          }
+          const text = ta.value.slice(start, end);
+          if (!String(text).trim()) return;
+          q.blanks = Array.isArray(q.blanks) ? q.blanks : [];
+          q.blanks.push({ id: String(q.blanks.length + 1), text, start, end });
+          q.codeTemplate = ta.value;
+          try { App.pushBuilderHistory(true); } catch(_){}
+          if (window._lvccRenderBuilder) window._lvccRenderBuilder();
+          else if (window._renderAssessmentBuilder) window._renderAssessmentBuilder();
+        };
+      });
+      box.querySelectorAll('[data-cc-clear-blanks]').forEach(btn => {
+        btn.onclick = () => {
+          const gi = Number(btn.dataset.ccClearBlanks);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q) return;
+          q.blanks = [];
+          try { App.pushBuilderHistory(true); } catch(_){}
+          if (window._lvccRenderBuilder) window._lvccRenderBuilder();
+          else if (window._renderAssessmentBuilder) window._renderAssessmentBuilder();
+        };
+      });
+      box.querySelectorAll('[data-tf-merged-color]').forEach(el => {
+        el.oninput = () => {
+          const [gi, ri] = el.dataset.tfMergedColor.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (q && q.tableRows && q.tableRows[ri]) {
+            q.tableRows[ri].color = el.value;
+            const tr = el.closest('tr');
+            if (tr) tr.style.background = el.value;
+          }
+        };
+      });
+
+      box.querySelectorAll('[data-tf-add-row]').forEach(el => {
+        el.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const gi = Number(el.dataset.tfAddRow);
+          const q = (window._builderQuestions || [])[gi]; if (!q) return;
+          if (typeof Regular.ensureTableLayout === 'function') Regular.ensureTableLayout(q);
+          q.tableRows = q.tableRows || [];
+          if (q.tableRows.filter(r => r && r.type === 'data').length >= 20) return;
+          q.tableRows.push({ type: 'data' });
+          q.rows = q.tableRows.filter(r => r && r.type === 'data').length;
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-tf-top-merged]').forEach(el => {
+        el.oninput = () => {
+          const gi = Number(el.dataset.tfTopMerged);
+          const q = (window._builderQuestions || [])[gi];
+          if (q) q.topMergedRow = el.value;
+        };
+      });
+      box.querySelectorAll('[data-tf-colw]').forEach(el => {
+        el.onchange = el.oninput = () => {
+          const [gi, c] = el.dataset.tfColw.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q) return;
+          q.colWidths = Array.isArray(q.colWidths) ? q.colWidths : [];
+          while (q.colWidths.length <= c) q.colWidths.push('');
+          q.colWidths[c] = el.value ? Number(el.value) : '';
+        };
+      });
+      box.querySelectorAll('[data-tf-row-color]').forEach(el => {
+        el.oninput = () => {
+          const [gi, ri] = el.dataset.tfRowColor.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (q && q.tableRows && q.tableRows[ri]) q.tableRows[ri].color = el.value;
+        };
+      });
+      
+      box.querySelectorAll('[data-tf-del-first-row]').forEach(el => {
+        el.onclick = () => {
+          const gi = Number(el.dataset.tfDelFirstRow);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q || !Array.isArray(q.tableRows)) return;
+          const di = q.tableRows.findIndex(r => r && r.type === 'data');
+          if (di < 0) return;
+          // shift cell keys down for data rows after first
+          const cols = Number(q.cols) || 3;
+          const dataRows = q.tableRows.filter(r => r && r.type === 'data');
+          if (dataRows.length <= 1) {
+            UI.alert('Keep at least one data row, or clear cells instead.', 'Table');
+            return;
+          }
+          q.tableRows.splice(di, 1);
+          // Rebuild cells map for data rows (r index)
+          const newCells = {};
+          Object.keys(q.cells || {}).forEach(k => {
+            const m = String(k).match(/^(\d+)[-_](\d+)$/);
+            if (!m) { newCells[k] = q.cells[k]; return; }
+            const r = Number(m[1]), c = Number(m[2]);
+            if (r === 0) return; // drop first data row cells
+            newCells[(r - 1) + '-' + c] = q.cells[k];
+          });
+          q.cells = newCells;
+          q.rows = Math.max(1, (q.rows || 1) - 1);
+          try { App.pushBuilderHistory(true); } catch(_){}
+          if (window._lvccRenderBuilder) window._lvccRenderBuilder();
+          else if (window._renderAssessmentBuilder) window._renderAssessmentBuilder();
+        };
+      });
+      box.querySelectorAll('[data-tf-del-ri]').forEach(el => {
+        el.onclick = () => {
+          const [gi, ri] = el.dataset.tfDelRi.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q || !q.tableRows || !q.tableRows[ri]) return;
+          const row = q.tableRows[ri];
+          if (row.type === 'data') {
+            // recount data index of this row
+            let dataIdx = -1, count = 0;
+            for (let i = 0; i < q.tableRows.length; i++) {
+              if (q.tableRows[i] && q.tableRows[i].type === 'data') {
+                if (i === ri) { dataIdx = count; break; }
+                count++;
+              }
+            }
+            q.tableRows.splice(ri, 1);
+            if (dataIdx >= 0) {
+              const newCells = {};
+              Object.keys(q.cells || {}).forEach(k => {
+                const m = String(k).match(/^(\d+)[-_](\d+)$/);
+                if (!m) { newCells[k] = q.cells[k]; return; }
+                const r = Number(m[1]), c = Number(m[2]);
+                if (r === dataIdx) return;
+                if (r > dataIdx) newCells[(r - 1) + '-' + c] = q.cells[k];
+                else newCells[r + '-' + c] = q.cells[k];
+              });
+              q.cells = newCells;
+              q.rows = Math.max(1, (q.rows || 1) - 1);
+            }
+          } else {
+            q.tableRows.splice(ri, 1);
+          }
+          try { App.pushBuilderHistory(true); } catch(_){}
+          if (window._lvccRenderBuilder) window._lvccRenderBuilder();
+          else if (window._renderAssessmentBuilder) window._renderAssessmentBuilder();
+        };
+      });
+      // Column width drag resize
+      box.querySelectorAll('[data-tf-resize]').forEach(handle => {
+        if (handle._resizeBound) return;
+        handle._resizeBound = true;
+        handle.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const [gi, c] = handle.dataset.tfResize.split(':').map(Number);
+          const th = handle.closest('th');
+          const startX = e.clientX;
+          const startW = th ? th.offsetWidth : 100;
+          const onMove = (ev) => {
+            const w = Math.max(60, Math.min(600, startW + (ev.clientX - startX)));
+            if (th) {
+              th.style.width = w + 'px';
+              th.style.minWidth = w + 'px';
+            }
+            const q = (window._builderQuestions || [])[gi];
+            if (q) {
+              q.colWidths = Array.isArray(q.colWidths) ? q.colWidths : [];
+              while (q.colWidths.length <= c) q.colWidths.push('');
+              q.colWidths[c] = w;
+            }
+          };
+          const onUp = () => {
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+          };
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+        });
+      });
+
+      box.querySelectorAll('[data-tf-add-merged]').forEach(el => {
+        el.onclick = () => {
+          const gi = Number(el.dataset.tfAddMerged);
+          const q = (window._builderQuestions || [])[gi];
+          if (!q) return;
+          q.tableRows = q.tableRows || [];
+          q.tableRows.push({ type: 'merged', label: '' });
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-tf-merged]').forEach(el => {
+        el.oninput = () => {
+          const [gi, ri] = el.dataset.tfMerged.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (q && q.tableRows && q.tableRows[ri]) q.tableRows[ri].label = el.value;
+        };
+      });
+      box.querySelectorAll('[data-tf-add-sub]').forEach(el => {
+        el.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const gi = Number(el.dataset.tfAddSub);
+          const q = (window._builderQuestions || [])[gi]; if (!q) return;
+          if (typeof Regular.ensureTableLayout === 'function') Regular.ensureTableLayout(q);
+          q.tableRows = q.tableRows || [];
+          q.tableRows.push({ type: 'subheader', values: Array(q.cols || 3).fill('') });
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-tf-del-row]').forEach(el => {
+        el.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const gi = Number(el.dataset.tfDelRow);
+          const q = (window._builderQuestions || [])[gi]; if (!q) return;
+          if (typeof Regular.ensureTableLayout === 'function') Regular.ensureTableLayout(q);
+          if (!q.tableRows || !q.tableRows.length) return;
+          const last = q.tableRows[q.tableRows.length - 1];
+          if (last && last.type === 'data') {
+            const di = q.tableRows.filter(r => r && r.type === 'data').length - 1;
+            Object.keys(q.cells || {}).forEach(k => {
+              if (k.startsWith(di + '-')) delete q.cells[k];
+            });
+          }
+          q.tableRows.pop();
+          q.rows = q.tableRows.filter(r => r && r.type === 'data').length || 1;
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-tf-subcell]').forEach(el => {
+        el.oninput = () => {
+          const [gi, ri, c] = el.dataset.tfSubcell.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi]; if (!q) return;
+          if (typeof Regular.ensureTableLayout === 'function') Regular.ensureTableLayout(q);
+          if (q.tableRows && q.tableRows[ri] && q.tableRows[ri].type === 'subheader') {
+            q.tableRows[ri].values = q.tableRows[ri].values || [];
+            q.tableRows[ri].values[c] = el.value;
+          }
+        };
+      });
+      box.querySelectorAll('[data-tf-alt-pop]').forEach(el => {
+        el.onclick = async (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const [gi, key] = el.dataset.tfAltPop.split(':');
+          const q = (window._builderQuestions || [])[Number(gi)]; if (!q) return;
+          q.cells = q.cells || {};
+          const cell = q.cells[key] || { blank: true };
+          const alts = Array.isArray(cell.alternatives) ? cell.alternatives.slice()
+            : (Array.isArray(cell.correct) && cell.correct.length > 1 ? cell.correct.slice(1) : []);
+          const primary = Array.isArray(cell.correct) ? (cell.correct[0] || '') : (cell.correct || '');
+          const cur = alts.join(', ');
+          const v = await UI.prompt(
+            'Alternative answers (comma-separated). Leave blank to clear.',
+            cur,
+            'Add alternative',
+            'alt1, alt2'
+          );
+          if (v == null) return;
+          cell.alternatives = String(v).split(',').map(s => s.trim()).filter(Boolean);
+          cell.correct = [primary, ...cell.alternatives].filter((x, i, a) => x !== '' || i === 0);
+          cell.blank = true;
+          q.cells[key] = cell;
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-tf-header]').forEach(el => {
+        el.oninput = () => {
+          const [gi, c] = el.dataset.tfHeader.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi]; if (!q) return;
+          q.headers = q.headers || []; q.headers[c] = el.value;
+        };
+      });
+      
+      box.querySelectorAll('[data-tf-cell], [data-tf-header], [data-tf-merged], [data-tf-top-merged], [data-tf-subcell]').forEach(el => {
+        if (el._tfFmtBound) return;
+        el._tfFmtBound = true;
+        el.addEventListener('keydown', (e) => {
+          if (!(e.ctrlKey || e.metaKey)) return;
+          const k = (e.key || '').toLowerCase();
+          // Bold
+          if (k === 'b') {
+            e.preventDefault();
+            el.classList.toggle('tf-bold');
+            const isBold = el.classList.contains('tf-bold');
+            el.dataset.tfBold = isBold ? '1' : '0';
+            if (el.dataset.tfCell) {
+              const [gi, key] = el.dataset.tfCell.split(':');
+              const q = (window._builderQuestions || [])[Number(gi)];
+              if (q) {
+                q.cells = q.cells || {};
+                q.cells[key] = q.cells[key] || {};
+                q.cells[key].bold = isBold;
+              }
+            }
+            return;
+          }
+          // Alignment: Ctrl+L left, Ctrl+R right, Ctrl+E center, Ctrl+J justify
+          const alignMap = { l: 'left', r: 'right', e: 'center', j: 'justify' };
+          if (alignMap[k]) {
+            e.preventDefault();
+            const align = alignMap[k];
+            el.style.textAlign = align;
+            el.dataset.tfAlign = align;
+            if (el.dataset.tfCell) {
+              const [gi, key] = el.dataset.tfCell.split(':');
+              const q = (window._builderQuestions || [])[Number(gi)];
+              if (q) {
+                q.cells = q.cells || {};
+                q.cells[key] = q.cells[key] || {};
+                q.cells[key].align = align;
+              }
+              const td = el.closest('td');
+              if (td) { td.style.textAlign = align; td.dataset.align = align; }
+            }
+          }
+        });
+      });
+
+      box.querySelectorAll('[data-tf-blank]').forEach(el => {
+        el.onchange = () => {
+          const [gi, key] = el.dataset.tfBlank.split(':');
+          const q = (window._builderQuestions || [])[Number(gi)]; if (!q) return;
+          q.cells = q.cells || {};
+          const cell = q.cells[key] || {};
+          cell.blank = el.checked;
+          if (cell.blank) {
+            let blanks = Object.keys(q.cells).filter(k => q.cells[k]?.blank).length;
+            if (!q.cells[key]?.blank) blanks += 1;
+            // recount
+            const next = { ...q.cells, [key]: { ...cell, blank: true } };
+            const n = Object.keys(next).filter(k => next[k]?.blank).length;
+            if (n > 50) {
+              el.checked = false;
+              if (window.UI) UI.alert('Maximum 50 blank cells per table.', 'Limit');
+              return;
+            }
+            cell.correct = cell.correct || [''];
+          } else {
+            cell.value = cell.value || '';
+          }
+          q.cells[key] = cell;
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+      box.querySelectorAll('[data-tf-sublabel]').forEach(el => {
+        el.oninput = () => {
+          const [gi, ri] = el.dataset.tfSublabel.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (q && q.tableRows && q.tableRows[ri]) {
+            q.tableRows[ri].label = el.value;
+            q.tableRows[ri].values = [el.value];
+          }
+        };
+      });
+      const syncTfBoldFromDom = () => {
+        box.querySelectorAll('[data-tf-cell]').forEach(el => {
+          const [gi, key] = el.dataset.tfCell.split(':');
+          const q = (window._builderQuestions || [])[Number(gi)];
+          if (!q) return;
+          q.cells = q.cells || {};
+          q.cells[key] = q.cells[key] || {};
+          if (el.classList.contains('tf-bold') || el.dataset.tfBold === '1') {
+            q.cells[key].bold = true;
+          }
+        });
+      };
+      box.querySelectorAll('[data-tf-cell]').forEach(el => {
+        el.oninput = () => {
+          const [gi, key] = el.dataset.tfCell.split(':');
+          const q = (window._builderQuestions || [])[Number(gi)]; if (!q) return;
+          q.cells = q.cells || {};
+          const cell = q.cells[key] || {};
+          if (cell.blank) {
+            const alts = cell.alternatives || [];
+            cell.correct = [el.value, ...alts];
+          } else {
+            cell.value = el.value;
+          }
+          q.cells[key] = cell;
+        };
+      });
+      box.querySelectorAll('[data-tf-alt]').forEach(el => {
+        el.oninput = () => {
+          const [gi, key] = el.dataset.tfAlt.split(':');
+          const q = (window._builderQuestions || [])[Number(gi)]; if (!q) return;
+          q.cells = q.cells || {};
+          const cell = q.cells[key] || { blank: true };
+          const primary = Array.isArray(cell.correct) ? cell.correct[0] : (cell.correct || '');
+          cell.alternatives = el.value.split(',').map(s => s.trim()).filter(Boolean);
+          cell.correct = [primary, ...cell.alternatives];
+          q.cells[key] = cell;
+        };
+      });
+      // Builder calculator keys
+      box.querySelectorAll('[data-tf-calc-key]').forEach(btn => {
+        btn.onclick = () => {
+          const [gi, key] = btn.dataset.tfCalcKey.split(':');
+          const disp = box.querySelector(`[data-tf-calc-display="${gi}"]`);
+          if (!disp) return;
+          let v = disp.value === '0' ? '' : disp.value;
+          if (key === 'C') disp.value = '0';
+          else if (key === '⌫') disp.value = v.slice(0, -1) || '0';
+          else if (key === '=') {
+            try { disp.value = String(Function('"use strict";return (' + v + ')')()); }
+            catch (_) { disp.value = 'Error'; }
+          } else if (key === 'Copy') {
+            try { navigator.clipboard.writeText(disp.value); } catch (_) {}
+          } else disp.value = v + key;
+        };
+      });
+
+
+      } // end sections.length else
+
+      document.getElementById('add-question-footer-btn').onclick = async () => {
+      try {
+        const picker = window._lvccOpenTypePicker || openTypePicker;
+        const adder = window._lvccAddSectionOfType || addSectionOfType;
+        if (typeof picker !== 'function' || typeof adder !== 'function') {
+          await UI.alert('Could not open question types. Refresh the page and try again.', 'Error');
+          return;
+        }
+        const type = await picker();
+        if (type) adder(type);
+      } catch (err) {
+        console.error(err);
+        await UI.alert(err.message || String(err), 'Error');
+      }
+    };
+
+
+    const buildPayload = (status) => {
+      const title = document.getElementById('exam-title').value.trim();
+      const instructions = (document.getElementById('exam-instructions')?.value || '').trim();
+      const examType = document.getElementById('exam-type').value;
+      const language = document.getElementById('exam-language').value;
+      const subject = document.getElementById('exam-subject').value.trim() || 'General';
+      const startAt = document.getElementById('exam-start')?.value || '';
+      const endAt = document.getElementById('exam-end')?.value || '';
+      const maxScore = examType === 'regular' ? 0 : (Number(document.getElementById('exam-maxscore').value) || 100);
+      return { title, instructions, examType, language, subject, startAt, endAt, maxScore, status };
+    };
+
+    document.getElementById('draft-exam-btn').onclick = async () => {
+      const btn = document.getElementById('draft-exam-btn');
+      const pub = document.getElementById('create-exam-btn');
+      const saveStatus = (btn && btn.dataset.editStatus === 'published') ? 'published' : 'draft';
+      try {
+        if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+        if (pub) pub.disabled = true;
+        const id = await this.saveAssessment(saveStatus);
+        await UI.alert(
+          saveStatus === 'published' ? 'Assessment saved. It remains published.' : 'Assessment has been saved as draft.',
+          saveStatus === 'published' ? 'Saved' : 'Draft saved'
+        );
+        window._editingExamId = null;
+        try { sessionStorage.removeItem('lvcc_editing_exam'); } catch (_) {}
+        this.showInstructorHome();
+      } catch (err) {
+        console.error(err);
+        await UI.alert(err.message || String(err), 'Could not save');
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = (btn.dataset.editStatus === 'published') ? 'Save' : 'Save as Draft';
+        }
+        if (pub) pub.disabled = false;
+      }
+    };
+
+    document.getElementById('create-exam-btn').onclick = async () => {
+      const btn = document.getElementById('create-exam-btn');
+      const draft = document.getElementById('draft-exam-btn');
+      try {
+        // Validate before schedule popup
+        const preview = this.collectAssessmentForm('published');
+        if (!preview.title) { await UI.alert('Title is required.', 'Missing fields'); return; }
+        if (!preview.subject) { await UI.alert('Subject is required.', 'Missing fields'); return; }
+        if (preview.examType === 'regular' && !(preview.questions || []).length) {
+          await UI.alert('Add at least one question before publishing.', 'No questions');
+          return;
+        }
+        const sched = await this.pickSchedule();
+        if (!sched) return;
+        if (btn) { btn.disabled = true; btn.textContent = 'Publishing…'; }
+        if (draft) draft.disabled = true;
+        const id = await this.saveAssessment('published', sched);
+        window._editingExamId = null;
+        try { sessionStorage.removeItem('lvcc_editing_exam'); } catch (_) {}
+        // Optional student email invites before code/QR
+        try {
+          const inv = await UI.prompt(
+            'Invite student emails (optional, comma or newline separated). Leave blank to skip.',
+            '',
+            'Invite students',
+            'student@example.com'
+          );
+          if (inv && String(inv).trim()) {
+            const emails = String(inv).split(/[\n,;]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+            for (const email of emails) {
+              try {
+                await window.db.collection('examInvites').add({
+                  examId: id,
+                  email,
+                  createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                  createdBy: Auth.currentUser?.uid || null
+                });
+              } catch (_) {}
+            }
+          }
+        } catch (_) {}
+        await this.showPublishSuccessModal(id);
+      } catch (err) {
+        console.error(err);
+        await UI.alert(err.message || String(err), 'Could not publish');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Publish'; }
+        if (draft) draft.disabled = false;
+      }
+    };
+
+    // Always bind helpers and paint builder once so Add Question / Save work even with 0 sections
+    window._lvccOpenTypePicker = openTypePicker;
+    window._lvccAddSectionOfType = addSectionOfType;
+    window._renderAssessmentBuilder = renderBuilder;
+    window._lvccRenderBuilder = renderBuilder;
+    try { renderBuilder(); } catch (e) { console.error('renderBuilder init', e); }
+  },
+  async copyExamLink(examId) {
+    const url = `${window.location.origin}${window.location.pathname}?exam=${examId}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      await UI.alert('Assessment link copied to clipboard.', 'Share');
+    } catch (_) {
+      const ta = document.createElement('textarea');
+      ta.value = url; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); } catch (__) {}
+      ta.remove();
+      await UI.alert('Assessment link copied to clipboard.', 'Share');
+    }
+  },
+
+  async showPublishSuccessModal(examId) {
+    let exam = null;
+    try { exam = await Exam.getExam(examId); } catch (_) {}
+    if (!exam) {
+      await UI.alert('Assessment published.', 'Published');
+      return this.showInstructorHome();
+    }
+    const codeRaw = String(exam.assessmentCode || exam.code || exam.examCode || '').replace(/\D/g, '').slice(0, 8);
+    const pretty = this.formatExamCodeDisplay(codeRaw);
+    const start = exam.startAt ? new Date(typeof exam.startAt === 'number' ? exam.startAt : exam.startAt).toLocaleString() : '—';
+    const end = exam.endAt ? new Date(typeof exam.endAt === 'number' ? exam.endAt : exam.endAt).toLocaleString() : '—';
+    const lim = exam.durationMinutes != null ? (exam.durationMinutes + ' min') : '—';
+    let qr = '';
+    try {
+      const path = (location.pathname || '/').replace(/\/?$/, '/');
+      const url = location.origin + path + '?exam=' + encodeURIComponent(examId);
+      qr = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(url);
+    } catch (_) {}
+    const root = document.getElementById('ui-modal-root') || (() => {
+      const el = document.createElement('div');
+      el.id = 'ui-modal-root';
+      document.body.appendChild(el);
+      return el;
+    })();
+    root.style.cssText = 'position:fixed;inset:0;z-index:50000;pointer-events:auto;';
+    root.innerHTML = `<div class="modal-overlay ui-modal-overlay" style="z-index:50000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.55)">
+      <div class="modal ui-modal" style="max-width:440px;width:92%;text-align:center;margin:1rem">
+        <h2 style="margin-top:0">Assessment published</h2>
+        <p style="font-weight:600;font-size:1.05rem">${escapeHtml(exam.title || 'Assessment')}</p>
+        <p class="publish-code-big" data-raw-code="${escapeHtml(codeRaw)}">${escapeHtml(pretty || codeRaw || '—')}</p>
+        <p class="text-muted" style="font-size:0.85rem;margin:0.5rem 0;line-height:1.5">Start: ${escapeHtml(start)}<br/>End: ${escapeHtml(end)}<br/>Time limit: ${escapeHtml(lim)}</p>
+        ${qr ? `<img src="${qr}" alt="QR code" width="200" height="200" style="border-radius:12px;background:#fff;padding:8px;margin:0.5rem auto;display:block" />` : ''}
+        <div class="action-btns" style="justify-content:center;margin-top:1rem;flex-wrap:wrap;gap:0.5rem">
+          <button type="button" class="btn btn-ghost" id="pub-copy-code">Copy code</button>
+          <button type="button" class="btn btn-ghost" id="pub-copy-link">Copy link</button>
+          <button type="button" class="btn btn-primary" id="pub-done">Done</button>
+        </div>
+      </div>
+    </div>`;
+    const copyBtn = root.querySelector('#pub-copy-code');
+    if (copyBtn) copyBtn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(codeRaw);
+        await UI.alert('Code copied.', 'Copied');
+      } catch (_) {}
+    };
+    const linkBtn = root.querySelector('#pub-copy-link');
+    if (linkBtn) linkBtn.onclick = async () => {
+      try {
+        const path = (location.pathname || '/').replace(/\/?$/, '/');
+        const url = location.origin + path + '?exam=' + encodeURIComponent(examId);
+        await navigator.clipboard.writeText(url);
+        await UI.alert('Link copied.', 'Copied');
+      } catch (_) {}
+    };
+    const done = root.querySelector('#pub-done');
+    if (done) done.onclick = () => {
+      root.innerHTML = '';
+      this.showInstructorHome();
+    };
+  },
+
+  async showSharePanel(examId) {
+    const exam = await Exam.getExam(examId);
+    const codeRaw = String(exam?.assessmentCode || exam?.code || '').replace(/\D/g, '').slice(0, 8);
+    const code = this.formatExamCodeDisplay(codeRaw) || codeRaw || examId.slice(0, 8);
+    const url = `${window.location.origin}${window.location.pathname}?exam=${examId}`;
+    const qr = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(url);
+    this.renderShell(`
+      <h2 class="page-title">Share assessment</h2>
+      <div class="card share-panel">
+        <p class="text-muted" style="text-align:center">Assessment code</p>
+        <div class="share-id-big" data-raw-code="${escapeHtml(codeRaw)}">${escapeHtml(String(code))}</div>
+        <div style="text-align:center;margin:1rem 0">
+          <img src="${qr}" alt="QR code" width="220" height="220" style="border-radius:12px;background:#fff;padding:8px" />
+        </div>
+        <p class="text-muted">Students can join with the Assessment ID or open this link while signed in.</p>
+        <div class="form-group">
+          <label>Link</label>
+          <input class="form-control" id="share-url" readonly value="${url.replace(/"/g, '&quot;')}" />
+        </div>
+        <div class="action-btns">
+          <button class="btn btn-primary" id="copy-share-link">Copy link</button>
+          <button class="btn btn-ghost" onclick="App.showInstructorHome()">Done</button>
+        </div>
+      </div>
+    `, 'exams');
+    document.getElementById('copy-share-link').onclick = () => {
+      navigator.clipboard.writeText(url).then(() => UI.alert('Link copied.', 'Share')).catch(() => {});
+    };
+    // auto-copy
+    try { navigator.clipboard.writeText(url); } catch (_) {}
+  },
+
+  async shareToCoTeacher(...args) { return this.shareToCoInstructor(...args); },
+
+  async shareToCoInstructor(examId) {
+    const email = await UI.prompt('Co-instructor email (La Verdad account):', '', 'Share to Co-instructor');
+    if (!email) return;
+    try {
+      const exam = await Exam.getExam(examId);
+      if (!exam) throw new Error('Assessment not found');
+      const { id, createdAt, updatedAt, teacherId, teacherEmail, teacherName, proctors, ...rest } = exam;
+      // Store pending share — co-instructor claims on login / list
+      await window.db.collection('pendingShares').add({
+        sourceExamId: examId,
+        toEmail: email.trim().toLowerCase(),
+        fromInstructorId: Auth.currentUser.uid,
+        fromInstructorEmail: Auth.userProfile.email,
+        snapshot: rest,
+        title: (exam.title || 'Assessment') + ' (shared)',
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      // If co-instructor already has user account, create their copy now
+      const q = await window.db.collection('users').where('email', '==', email.trim().toLowerCase()).limit(1).get();
+      if (!q.empty) {
+        const uid = q.docs[0].id;
+        const now = Date.now();
+        await Exam.createExam({
+          ...rest,
+          title: String(exam.title || 'Assessment').replace(/(\s*\(Copy\))+$/i, '').trim() + ' (Copy)',
+          startAt: now,
+          endAt: now + (Number(rest.durationMinutes) || 60) * 60000
+        });
+        // createExam uses current user as teacher — need direct write for co-instructor
+        // Fix: write exam under co-instructor id
+        const ref = window.db.collection('exams').doc();
+        await ref.set({
+          ...rest,
+          title: String(exam.title || 'Assessment').replace(/(\s*\(Copy\))+$/i, '').trim() + ' (Copy)',
+          teacherId: uid,
+          teacherEmail: email.trim().toLowerCase(),
+          teacherName: q.docs[0].data().name || email,
+          proctors: [],
+          startAt: now,
+          endAt: now + (Number(rest.durationMinutes) || 60) * 60000,
+          active: true,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      }
+      await UI.alert('Shared with co-instructor. They will see a fresh copy to configure.', 'Shared');
+    } catch (e) {
+      await UI.alert(e.message || String(e), 'Error');
+    }
+  },
+
+  async deleteExam(examId, title) {
+    const typed = await UI.prompt('Type the assessment name to confirm deletion:\n\n' + title, '', 'Delete assessment');
+    if (typed === null) return;
+    if (typed.trim() !== title.trim()) {
+      await UI.alert('Name did not match. Deletion cancelled.', 'Delete');
+      return;
+    }
+    if (!(await UI.confirm('Permanently delete this assessment?', 'Delete'))) return;
+    try {
+      await Exam.deleteExam(examId);
+      await UI.alert('Assessment deleted.', 'Deleted');
+      this.showInstructorHome();
+    } catch (e) {
+      await UI.alert(e.message || String(e), 'Error');
+    }
+  },
+
+
+  async openManageMenu(examId) {
+    const choice = await UI.prompt('Type: edit | duplicate | delete | close | reopen | publish', 'edit', 'Manage', 'edit');
+    if (choice == null) return;
+    const c = String(choice).trim().toLowerCase();
+    if (c === 'edit') return this.editExam(examId);
+    if (c === 'duplicate') return this.duplicateExam(examId);
+    if (c === 'delete') {
+      const ex = await Exam.getExam(examId);
+      return this.deleteExam(examId, ex?.title || '');
+    }
+    if (c === 'publish') return this.publishDraft(examId);
+    if (c === 'close') return this.toggleExamActive(examId, false);
+    if (c === 'reopen') return this.toggleExamActive(examId, true);
+    await UI.alert('Unknown action. Use edit, duplicate, delete, publish, close, or reopen.', 'Manage');
+  },
+
+  async openMonitorMenu(examId, live) {
+    const choice = await UI.prompt('Type: live | integrity | results | test', live ? 'live' : 'results', 'Monitor', 'live');
+    if (choice == null) return;
+    const c = String(choice).trim().toLowerCase();
+    if (c === 'live') return this.openLiveDashboard(examId);
+    if (c === 'integrity') return this.showIntegrityHistory(examId);
+    if (c === 'results') return this.showExamResults(examId);
+    if (c === 'test') return this.testAsStudent(examId);
+    await UI.alert('Unknown. Use live, integrity, results, or test.', 'Monitor');
+  },
+
+  async openShareMenu(examId) {
+    const choice = await UI.prompt('Type: link | invite | coteacher | proctors', 'link', 'Share', 'link');
+    if (choice == null) return;
+    const c = String(choice).trim().toLowerCase();
+    if (c === 'link' || c === 'qr') return this.showSharePanel(examId);
+    if (c === 'invite') return this.showExamInvites(examId);
+    if (c === 'coteacher' || c === 'co-instructor') return this.shareToCoInstructor(examId);
+    if (c === 'proctors') return this.showProctors(examId);
+    await UI.alert('Unknown. Use link, invite, coteacher, or proctors.', 'Share');
+  },
+
+  async editExam(examId) {
+    window._editingExamId = examId;
+    try { sessionStorage.setItem('lvcc_editing_exam', examId); } catch (_) {}
+    const exam = await Exam.getExam(examId);
+    if (!exam) { await UI.alert('Assessment not found.', 'Error'); return; }
+
+    // Prefill builder state BEFORE opening UI so first render has questions
+    let sections = [];
+    if (exam.sections && exam.sections.length) {
+      sections = JSON.parse(JSON.stringify(exam.sections));
+    } else if (exam.questions && exam.questions.length) {
+      sections = [{
+        id: 's1',
+        title: 'Questions',
+        instructions: exam.instructions || '',
+        questions: JSON.parse(JSON.stringify(exam.questions))
+      }];
+    }
+    window._builderSections = sections;
+    window._builderQuestions = sections.flatMap(s => s.questions || []);
+    window._pendingEditExam = exam;
+
+    await this.showCreateExam({ keepEditing: true });
+
+    const apply = () => {
+      const exam2 = window._pendingEditExam || exam;
+      const set = (id, val) => {
+        const el = document.getElementById(id);
+        if (el && val != null) el.value = val;
+      };
+      set('exam-title', exam2.title || '');
+      set('exam-subject', exam2.subject || '');
+      set('exam-type', exam2.examType || 'regular');
+      set('exam-language', exam2.language || 'python');
+      set('exam-starter', exam2.starterCode || '');
+      set('exam-answer', exam2.answerKey || '');
+      set('exam-maxscore', exam2.maxScore != null ? exam2.maxScore : 100);
+
+      // Ensure sections still loaded (showCreateExam must not clear when keepEditing)
+      if (!window._builderSections || !window._builderSections.length) {
+        window._builderSections = sections;
+        window._builderQuestions = sections.flatMap(s => s.questions || []);
+      }
+
+      const typeEl = document.getElementById('exam-type');
+      if (typeEl) {
+        typeEl.value = exam2.examType || 'regular';
+        typeEl.dispatchEvent(new Event('change'));
+      }
+
+      if (typeof window._renderAssessmentBuilder === 'function') {
+        window._renderAssessmentBuilder();
+      } else if (typeof window._lvccRenderBuilder === 'function') {
+        window._lvccRenderBuilder();
+      }
+
+      const titleEl = document.querySelector('.page-title');
+      if (titleEl) titleEl.textContent = 'Edit Assessment';
+      const draftBtn = document.getElementById('draft-exam-btn');
+      const pubBtn = document.getElementById('create-exam-btn');
+      if (draftBtn) {
+        draftBtn.textContent = exam2.status === 'published' ? 'Save' : 'Save as Draft';
+        draftBtn.dataset.editStatus = exam2.status === 'published' ? 'published' : 'draft';
+      }
+      if (pubBtn) {
+        if (exam2.status === 'published') {
+          pubBtn.style.display = 'none';
+        } else {
+          pubBtn.style.display = '';
+          pubBtn.textContent = 'Publish';
+        }
+      }
+    };
+
+    // Run after DOM + renderBuilder binding
+    requestAnimationFrame(() => {
+      apply();
+      setTimeout(apply, 50);
+      setTimeout(apply, 200);
+    });
+  },
+
+  async toggleExamActive(examId, active) {
+    if (active) return this.reopenExam(examId);
+    if (!(await UI.confirm('Close this assessment now? Students will no longer be able to take it.', 'Close assessment'))) return;
+    try {
+      await Exam.updateExam(examId, { active: false, endAt: Date.now() });
+      try { await Exam.deactivateProctorsForExam(examId); } catch (_) {}
+      await UI.alert('Assessment closed.', 'Done');
+      this.showInstructorHome();
+    } catch (e) {
+      await UI.alert(e.message || String(e), 'Error');
+    }
+  },
+
+
+  async persistExamPayload(examId, payload) {
+    const raw = JSON.stringify(payload);
+    const softLimit = 900 * 1024;
+    const canStorage = !!(window.firebase && firebase.storage);
+    if (raw.length < softLimit || !canStorage) {
+      if (examId) {
+        await this.persistExamPayload(examId, payload);
+        return examId;
+      }
+      const ref = await window.db.collection('exams').add(payload);
+      return ref.id;
+    }
+    try {
+      const clone = JSON.parse(raw);
+      const images = [];
+      const walk = (obj, path) => {
+        if (!obj || typeof obj !== 'object') return;
+        if (Array.isArray(obj)) { obj.forEach((v, i) => walk(v, path.concat([i]))); return; }
+        Object.keys(obj).forEach(k => {
+          const v = obj[k];
+          if (typeof v === 'string' && v.indexOf('data:image') === 0 && v.length > 2500) {
+            images.push({ path: path.concat([k]), dataUrl: v });
+            obj[k] = null;
+          } else if (v && typeof v === 'object') walk(v, path.concat([k]));
+        });
+      };
+      walk(clone, []);
+      if (!images.length) {
+        await this.persistExamPayload(examId, payload);
+        return examId;
+      }
+      const id = examId || (await window.db.collection('exams').add({ title: payload.title || 'Draft', status: 'draft' })).id;
+      for (let i = 0; i < images.length; i++) {
+        const im = images[i];
+        const m = im.dataUrl.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/);
+        if (!m) continue;
+        const ref = firebase.storage().ref().child('assessments/' + id + '/img_' + Date.now() + '_' + i);
+        await ref.putString(m[2], 'base64', { contentType: m[1] });
+        const url = await ref.getDownloadURL();
+        let node = clone;
+        for (let j = 0; j < im.path.length - 1; j++) node = node[im.path[j]];
+        node[im.path[im.path.length - 1]] = url;
+      }
+      clone.imagesExternalized = true;
+      await window.db.collection('exams').doc(id).set(clone, { merge: true });
+      return id;
+    } catch (e) {
+      console.error('Storage externalize failed, trying direct save', e);
+      if (examId) await window.db.collection('exams').doc(examId).set(payload, { merge: true });
+      return examId;
+    }
+  },
+
+  async reopenExam(examId) {
+    const mode = await UI.confirm(
+      'OK = New session (fresh attempt for everyone, new code).\nCancel = keep dialog — use the next prompt for Previous session mode.',
+      'Reopen assessment'
+    );
+    // Second prompt for clarity
+    const choice = await new Promise((resolve) => {
+      const root = document.getElementById('ui-modal-root') || document.body;
+      const w = document.createElement('div');
+      w.className = 'modal-overlay ui-modal-overlay';
+      w.style.zIndex = '50000';
+      w.innerHTML = `<div class="modal ui-modal">
+        <h2>Reopen assessment</h2>
+        <p class="ui-modal-body">Choose how to reopen:</p>
+        <div class="modal-actions" style="flex-direction:column;gap:0.5rem;align-items:stretch">
+          <button type="button" class="btn btn-primary" id="reopen-new">New session (fresh code &amp; attempts)</button>
+          <button type="button" class="btn btn-ghost" id="reopen-prev">Previous session (select students to continue)</button>
+          <button type="button" class="btn btn-ghost" id="reopen-cancel">Cancel</button>
+        </div>
+      </div>`;
+      root.appendChild(w);
+      w.querySelector('#reopen-new').onclick = () => { w.remove(); resolve('new'); };
+      w.querySelector('#reopen-prev').onclick = () => { w.remove(); resolve('previous'); };
+      w.querySelector('#reopen-cancel').onclick = () => { w.remove(); resolve(null); };
+    });
+    if (!choice) return;
+    if (choice === 'previous') {
+      await this.reopenPreviousSession(examId);
+      return;
+    }
+    const sched = await this.pickSchedule();
+    if (!sched) return;
+    try {
+      const prev = await Exam.getExam(examId);
+      const nextWave = (Number(prev?.sessionWave || 0) || 0) + 1;
+      let assessmentCode = '';
+      for (let attempt = 0; attempt < 8; attempt++) {
+        assessmentCode = String(Math.floor(10000000 + Math.random() * 90000000));
+        try {
+          const exists = await window.db.collection('exams').where('assessmentCode', '==', assessmentCode).limit(1).get();
+          if (exists.empty) break;
+        } catch (_) { break; }
+      }
+      const payload = {
+        active: true,
+        status: 'published', runId: 'run_' + Date.now(),
+        startAt: sched.startAt,
+        endAt: sched.endAt,
+        durationMinutes: sched.durationMinutes || Math.max(1, Math.round((sched.endAt - sched.startAt) / 60000)),
+        assessmentCode,
+        sessionWave: nextWave,
+        reopenToken: nextWave
+      };
+      if (sched.randomizeQuestions != null) payload.randomizeQuestions = !!sched.randomizeQuestions;
+      await Exam.updateExam(examId, payload);
+      // Optional student invites (same as publish)
+      try {
+        const inv = await UI.prompt(
+          'Invite student emails (optional, comma or newline separated). Leave blank to skip.',
+          '',
+          'Invite students',
+          'student@example.com'
+        );
+        if (inv && String(inv).trim()) {
+          const emails = String(inv).split(/[\n,;]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+          for (const email of emails) {
+            try {
+              await window.db.collection('examInvites').add({
+                examId,
+                email,
+                createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                createdBy: Auth.currentUser?.uid || null
+              });
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
+      await this.showPublishSuccessModal(examId);
+      // Refresh My Assessments cards so Live/Closed/Reopen buttons update without full page reload
+      try {
+        const el = document.getElementById('exams-container');
+        if (el && window.Dashboard && Dashboard.renderMyExams) await Dashboard.renderMyExams(el);
+        else await this.showInstructorHome();
+      } catch (_) {}
+    } catch (e) {
+      await UI.alert(e.message || String(e), 'Error');
+    }
+  },
+
+  async duplicateExam(examId) {
+    if (!(await UI.confirm('Duplicate this assessment? A new draft copy will be created for you to edit.', 'Duplicate'))) return;
+    try {
+      const src = await Exam.getExam(examId);
+      if (!src) throw new Error('Assessment not found');
+      const copy = await Exam.duplicateExam(examId, {
+        title: src.title || 'Assessment',
+        status: 'draft',
+        active: false,
+        startAt: Date.now(),
+        endAt: Date.now() + 3600000,
+        durationMinutes: src.durationMinutes || 60
+      });
+      // Ensure sections/questions copied
+      if (src.sections || src.questions) {
+        await Exam.updateExam(copy.id, {
+          sections: src.sections || [],
+          questions: src.questions || [],
+          status: 'draft',
+          active: false
+        });
+      }
+      await UI.alert('Duplicated as draft: ' + (copy.title || 'Copy'), 'Duplicated');
+      this.showInstructorHome();
+    } catch (e) {
+      console.error(e);
+      await UI.alert(e.message || String(e), 'Error');
+    }
+  },
+
+
+  async showSessionsPage() {
+    this.renderShell(`
+      <h2 class="page-title">Sessions</h2>
+      <p class="page-subtitle">Past assessment runs — results and integrity history are kept per session.</p>
+      <input type="search" id="sessions-filter" class="form-control" placeholder="Search by assessment, code, date…" style="max-width:420px;margin-bottom:0.75rem" />
+      <div id="sessions-grid" class="table-wrap">Loading…</div>
+    `, 'sessions');
+    try { UI.showLoading('Loading sessions…'); } catch (_) {}
+    try {
+      const uid = Auth.currentUser.uid;
+      let rows = [];
+      try {
+        const snap = await window.db.collection('sessions').where('teacherId', '==', uid).limit(500).get();
+        rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      } catch (_) {}
+      if (!rows.length) {
+        try {
+          const exams = await Exam.listMyExams();
+          for (const ex of (exams || []).slice(0, 40)) {
+            try {
+              const ss = await window.db.collection('sessions').where('examId', '==', ex.id).limit(100).get();
+              ss.docs.forEach(d => rows.push({ id: d.id, ...d.data(), _examTitle: ex.title }));
+            } catch (_) {}
+          }
+        } catch (_) {}
+      }
+      const map = {};
+      rows.forEach(s => {
+        if (s.isMock) return;
+        const run = s.runId || s.sessionWave || s.examId || 'unknown';
+        const key = (s.examId || '') + '|' + run;
+        if (!map[key]) {
+          map[key] = {
+            examId: s.examId,
+            runId: s.runId || null,
+            title: s.examTitle || s._examTitle || 'Assessment',
+            code: s.examCode || '',
+            participants: 0,
+            submitted: 0,
+            date: s.startedAt || s.createdAt || null,
+            sessionIds: []
+          };
+        }
+        map[key].participants += 1;
+        if (s.status === 'submitted' || s.status === 'ended') map[key].submitted += 1;
+        map[key].sessionIds.push(s.id);
+        if (s.examTitle) map[key].title = s.examTitle;
+        const t = s.startedAt || s.createdAt;
+        if (t) map[key].date = t;
+      });
+      const list = Object.values(map).sort((a, b) => {
+        const ta = a.date?.toMillis?.() || a.date || 0;
+        const tb = b.date?.toMillis?.() || b.date || 0;
+        return tb - ta;
+      });
+      const el = document.getElementById('sessions-grid');
+      if (!list.length) {
+        el.innerHTML = '<p class="text-muted">No sessions yet. Publish an assessment and have students take it.</p>';
+        return;
+      }
+      el.innerHTML = `<table class="table sessions-table">
+        <thead><tr><th>Assessment</th><th>Date</th><th>Participants</th><th>Code</th><th>Integrity</th></tr></thead>
+        <tbody>${list.map(r => {
+          const d = r.date?.toDate ? r.date.toDate() : (r.date ? new Date(r.date) : null);
+          const ds = d && !isNaN(d) ? d.toLocaleString() : '—';
+          return `<tr class="sessions-row" data-exam="${r.examId||''}" data-run="${r.runId||''}" style="cursor:pointer">
+            <td><div>${escapeHtml(r.title)}</div><div class="text-muted" style="font-size:0.75rem">${escapeHtml(ds)}</div></td>
+            <td>${escapeHtml(ds)}</td>
+            <td>${r.submitted}/${r.participants}</td>
+            <td>${escapeHtml(r.code || '—')}</td>
+            <td><button type="button" class="btn btn-sm btn-ghost btn-sess-integrity" data-exam="${r.examId||''}">Integrity issues</button></td>
+          </tr>`;
+        }).join('')}</tbody></table>`;
+      el.querySelectorAll('.sessions-row').forEach(tr => {
+        tr.onclick = (e) => {
+          if (e.target.closest('.btn-sess-integrity')) return;
+          const examId = tr.getAttribute('data-exam');
+          if (examId) this.showSessionDetail(examId, tr.getAttribute('data-run'));
+        };
+      });
+      el.querySelectorAll('.btn-sess-integrity').forEach(btn => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          this.showSessionIntegrity(btn.getAttribute('data-exam'), '');
+        };
+      });
+      const filterEl = document.getElementById('sessions-filter');
+      if (filterEl) {
+        filterEl.oninput = () => {
+          const q = (filterEl.value || '').toLowerCase();
+          el.querySelectorAll('.sessions-row').forEach(tr => {
+            tr.style.display = !q || (tr.textContent || '').toLowerCase().includes(q) ? '' : 'none';
+          });
+        };
+      }
+    } catch (e) {
+      console.error(e);
+      const el = document.getElementById('sessions-grid');
+      if (el) el.innerHTML = `<p class="text-muted">Could not load sessions: ${escapeHtml(e.message||'')}</p>`;
+    } finally {
+      try { UI.hideLoading(); } catch (_) {}
+    }
+  },
+
+  async showSessionDetail(examId, runId) {
+    try { UI.showLoading('Loading session…'); } catch (_) {}
+    try {
+      const exam = await Exam.getExam(examId);
+      const snap = await window.db.collection('sessions').where('examId', '==', examId).get();
+      let sessions = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(s => !s.isMock);
+      if (runId) sessions = sessions.filter(s => !s.runId || s.runId === runId);
+      const title = exam?.title || sessions[0]?.examTitle || 'Session';
+      this.renderShell(`
+        <div class="card-header page-header-responsive">
+          <div>
+            <h2 class="page-title">${escapeHtml(title)}</h2>
+            <p class="page-subtitle text-muted">${sessions.length} participant(s)</p>
+          </div>
+          <button class="btn btn-ghost" onclick="App.showSessionsPage()">← Sessions</button>
+        </div>
+        <input type="search" id="sess-detail-filter" class="form-control" placeholder="Search student name or email…" style="max-width:420px;margin:0.75rem 0" />
+        <div class="table-wrap mt-2"><table class="table" id="sess-detail-table">
+          <thead><tr><th>Participant</th><th>Status</th><th>Score</th><th>Accuracy</th><th>Integrity</th></tr></thead>
+          <tbody>${sessions.map(s => `<tr class="sess-student-row">
+            <td>${escapeHtml(s.studentName||s.studentEmail||'—')}<div class="text-muted" style="font-size:0.75rem">${escapeHtml(s.studentEmail||'')}</div></td>
+            <td>${escapeHtml(s.status||'—')}</td>
+            <td>${s.score!=null?s.score:'—'} / ${s.maxScore!=null?s.maxScore:'—'}</td>
+            <td>${s.accuracy!=null?s.accuracy+'%':'—'}</td>
+            <td><button type="button" class="btn btn-sm btn-ghost" data-sid="${s.id}" data-sname="${escapeHtml(s.studentName||'')}" data-semail="${escapeHtml(s.studentEmail||'')}" data-exam="${examId}">View issues</button></td>
+          </tr>`).join('') || '<tr><td colspan="5">No participants</td></tr>'}</tbody>
+        </table></div>
+      `, 'sessions');
+      document.getElementById('sess-detail-filter')?.addEventListener('input', (e) => {
+        const q = (e.target.value || '').toLowerCase();
+        document.querySelectorAll('.sess-student-row').forEach(tr => {
+          tr.style.display = !q || (tr.textContent || '').toLowerCase().includes(q) ? '' : 'none';
+        });
+      });
+      document.querySelectorAll('[data-sid]').forEach(btn => {
+        btn.onclick = () => this.showStudentSessionIntegrity(btn.getAttribute('data-exam'), btn.getAttribute('data-sid'), btn.getAttribute('data-sname'), btn.getAttribute('data-semail'));
+      });
+    } catch (e) {
+      await UI.alert(e.message || String(e), 'Error');
+    } finally {
+      try { UI.hideLoading(); } catch (_) {}
+    }
+  },
+
+
+  async showStudentSessionIntegrity(examId, sessionId, studentName, studentEmail) {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay ui-modal-overlay';
+    overlay.id = 'stu-int-overlay';
+    overlay.innerHTML = `<div class="modal ui-modal" style="max-width:960px;width:95%;height:90vh;display:flex;flex-direction:column">
+      <h2 style="margin-top:0;text-align:center">Integrity — ${escapeHtml(studentName || studentEmail || 'Student')}</h2>
+      <input type="search" id="stu-int-filter" class="form-control" placeholder="Filter issues…" style="margin-bottom:0.5rem" />
+      <div id="stu-int-body" style="flex:1;overflow-y:auto">Loading…</div>
+      <div class="modal-actions" style="display:flex;gap:0.5rem;justify-content:flex-end">
+        <button class="btn btn-primary" id="stu-int-export">Export PDF</button>
+        <button class="btn btn-ghost" id="stu-int-close">Close</button>
+      </div>
+    </div>`;
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    document.body.appendChild(overlay);
+    document.getElementById('stu-int-close').onclick = () => overlay.remove();
+
+    let items = [];
+    try {
+      // integrityHistory
+      try {
+        const snap = await window.db.collection('integrityHistory').where('examId', '==', examId).limit(500).get();
+        snap.docs.forEach(d => {
+          const n = { id: d.id, ...d.data() };
+          if (n.sessionId === sessionId || (studentEmail && n.studentEmail === studentEmail)) items.push(n);
+        });
+      } catch (_) {}
+      // notifications
+      try {
+        const snap = await window.db.collection('notifications').where('examId', '==', examId).limit(500).get();
+        snap.docs.forEach(d => {
+          const n = { id: d.id, ...d.data() };
+          if (n.sessionId === sessionId || (studentEmail && n.studentEmail === studentEmail)) items.push(n);
+        });
+      } catch (_) {}
+      // session.events
+      try {
+        const ss = await window.db.collection('sessions').doc(sessionId).get();
+        if (ss.exists) {
+          const s = ss.data() || {};
+          (s.events || []).forEach((e, i) => {
+            items.push({
+              id: sessionId + '_ev_' + i,
+              sessionId,
+              examId,
+              studentName: s.studentName || studentName,
+              studentEmail: s.studentEmail || studentEmail,
+              type: e.type,
+              details: e.details,
+              createdAt: e.timestamp || e.createdAt,
+              screenshot: e.screenshot || e.extra?.screenshot,
+              extra: e
+            });
+          });
+        }
+      } catch (_) {}
+      // dedupe
+      const seen = new Set();
+      items = items.filter(n => {
+        const key = n.id || ((n.type || '') + (n.details || '') + (n.createdAt?.toMillis?.() || n.createdAt || ''));
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      items.sort((a, b) => (b.createdAt?.toMillis?.() || Date.parse(b.createdAt || 0) || 0) - (a.createdAt?.toMillis?.() || Date.parse(a.createdAt || 0) || 0));
+    } catch (e) {
+      document.getElementById('stu-int-body').innerHTML = `<p>${escapeHtml(e.message || 'Error')}</p>`;
+      return;
+    }
+
+    const paint = (list) => {
+      const body = document.getElementById('stu-int-body');
+      if (!body) return;
+      if (!list.length) {
+        body.innerHTML = '<p class="text-muted">No integrity issues for this student.</p>';
+        return;
+      }
+      body.innerHTML = `<div class="table-wrap"><table class="table">
+        <thead><tr><th>Thumb</th><th>Name</th><th>Email</th><th>Issue</th><th>Details</th><th>When</th></tr></thead>
+        <tbody>${list.map(n => {
+          const t = n.createdAt?.toDate ? n.createdAt.toDate().toLocaleString()
+            : (n.createdAt ? new Date(n.createdAt).toLocaleString() : '—');
+          const shot = n.screenshot || n.extra?.screenshot || '';
+          const thumb = shot
+            ? `<img src="${shot}" alt="" style="width:64px;height:40px;object-fit:cover;border-radius:4px;cursor:pointer" onclick="UI.showImage && UI.showImage(this.src,'Screenshot')" />`
+            : '—';
+          const issue = this.integrityTypeLabel(n.type) || n.type || '';
+          return `<tr>
+            <td>${thumb}</td>
+            <td>${escapeHtml(n.studentName || studentName || '—')}</td>
+            <td>${escapeHtml(n.studentEmail || studentEmail || '—')}</td>
+            <td><span class="chip">${escapeHtml(issue)}</span></td>
+            <td>${escapeHtml(n.details || '')}</td>
+            <td>${escapeHtml(String(t))}</td>
+          </tr>`;
+        }).join('')}</tbody></table></div>`;
+    };
+    window._stuIntExport = items;
+    document.getElementById('stu-int-filter').oninput = (e) => {
+      const q = (e.target.value || '').toLowerCase();
+      const filtered = !q ? items : items.filter(n =>
+        (n.type || '').toLowerCase().includes(q) ||
+        (n.details || '').toLowerCase().includes(q) ||
+        (this.integrityTypeLabel(n.type) || '').toLowerCase().includes(q)
+      );
+      window._stuIntExport = filtered;
+      paint(filtered);
+    };
+    paint(items);
+
+    document.getElementById('stu-int-export').onclick = async () => {
+      const clear = () => {
+        try { UI.hideLoading(); } catch (_) {}
+        const el = document.getElementById('global-loading');
+        if (el) { el.classList.remove('visible'); el.style.display = 'none'; el.remove(); }
+      };
+      try { UI.showLoading('Generating PDF…'); } catch (_) {}
+      try {
+        await this.downloadIntegrityPdfDirect(
+          window._stuIntExport || items,
+          studentName || studentEmail || 'Student',
+          'Integrity_' + String(studentName || 'student').replace(/[^\w\-]+/g, '_').slice(0, 30) + '.pdf'
+        );
+      } catch (e) {
+        console.error(e);
+        try { await UI.alert(e.message || String(e), 'Export'); } catch (_) {}
+      } finally {
+        clear();
+        setTimeout(clear, 100);
+        setTimeout(clear, 500);
+      }
+    };
+  },
+
+  /** Direct PDF download via jsPDF — never opens print dialog or new tab */
+  async downloadIntegrityPdfDirect(items, title, filename) {
+    const JsPDF = await Promise.race([
+      this.ensureJsPdf(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('PDF library timeout')), 6000))
+    ]);
+    const doc = new JsPDF({ unit: 'mm', format: 'a4' });
+    doc.setFontSize(16);
+    doc.text('Integrity Issues', 14, 18);
+    doc.setFontSize(11);
+    doc.setTextColor(80);
+    doc.text(String(title || ''), 14, 26);
+    doc.setTextColor(0);
+    let y = 36;
+    (items || []).forEach(n => {
+      if (y > 270) { doc.addPage(); y = 20; }
+      const issue = this.integrityTypeLabel(n.type) || n.type || '';
+      const details = n.details || '';
+      const t = n.createdAt?.toDate ? n.createdAt.toDate().toLocaleString()
+        : (n.createdAt ? String(n.createdAt) : '');
+      doc.setFontSize(10);
+      doc.setFont(undefined, 'bold');
+      doc.text(String(issue).slice(0, 80), 14, y);
+      y += 5;
+      doc.setFont(undefined, 'normal');
+      doc.setFontSize(9);
+      const lines = doc.splitTextToSize(String(details).slice(0, 400), 180);
+      doc.text(lines, 14, y);
+      y += lines.length * 4.5 + 2;
+      if (t) { doc.setTextColor(100); doc.text(String(t), 14, y); doc.setTextColor(0); y += 5; }
+      // thumbnail if small data URL
+      const shot = n.screenshot || n.extra?.screenshot;
+      if (shot && String(shot).startsWith('data:image') && String(shot).length < 200000) {
+        try {
+          if (y > 240) { doc.addPage(); y = 20; }
+          doc.addImage(shot, 'JPEG', 14, y, 40, 24);
+          y += 28;
+        } catch (_) {}
+      }
+      y += 4;
+    });
+    doc.save(filename || 'Integrity.pdf');
+  },
+
+  async showSessionIntegrity(examId, runId) {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay ui-modal-overlay';
+    overlay.innerHTML = `<div class="modal ui-modal" style="max-width:900px;width:95%;height:90vh;display:flex;flex-direction:column">
+      <h2 style="margin-top:0">Integrity issues</h2>
+      <input type="search" id="sess-int-filter" class="form-control" placeholder="Search student or issue…" style="margin-bottom:0.5rem" />
+      <div id="sess-integrity-body" style="flex:1;overflow-y:auto">Loading…</div>
+      <div class="modal-actions"><button class="btn btn-ghost" id="sess-int-close">Close</button></div>
+    </div>`;
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    document.body.appendChild(overlay);
+    document.getElementById('sess-int-close').onclick = () => overlay.remove();
+    try {
+      const snap = await window.db.collection('integrityHistory').where('examId', '==', examId).limit(500).get();
+      let items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      items.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+      const body = document.getElementById('sess-integrity-body');
+      const paint = (list) => {
+        if (!list.length) {
+          body.innerHTML = '<p class="text-muted">No integrity issues recorded for this session.</p>';
+          return;
+        }
+        body.innerHTML = `<table class="table"><thead><tr><th>Name</th><th>Email</th><th>Issue</th><th>When</th></tr></thead><tbody>
+          ${list.map(n => {
+            const t = n.createdAt?.toDate ? n.createdAt.toDate().toLocaleString() : '—';
+            return `<tr><td>${escapeHtml(n.studentName||'—')}</td><td>${escapeHtml(n.studentEmail||'—')}</td>
+              <td><span class="chip">${escapeHtml(n.type||'')}</span> ${escapeHtml(n.details||'')}</td>
+              <td>${escapeHtml(t)}</td></tr>`;
+          }).join('')}</tbody></table>`;
+      };
+      if (!items.length) {
+        paint([]);
+        return;
+      }
+      paint(items);
+      document.getElementById('sess-int-filter')?.addEventListener('input', (e) => {
+        const q = (e.target.value || '').toLowerCase();
+        paint(!q ? items : items.filter(n =>
+          (n.studentName||'').toLowerCase().includes(q) ||
+          (n.studentEmail||'').toLowerCase().includes(q) ||
+          (n.type||'').toLowerCase().includes(q) ||
+          (n.details||'').toLowerCase().includes(q)
+        ));
+      });
+    } catch (e) {
+      document.getElementById('sess-integrity-body').innerHTML = `<p>${escapeHtml(e.message||'Error')}</p>`;
+    }
+  },
+
+  openLiveDashboard(examId) {
+    this.renderShell(`
+      <div class="card-header page-header-responsive">
+        <h2 class="page-title">Live dashboard</h2>
+        <button class="btn btn-ghost" onclick="App.showInstructorHome()">Back</button>
+      </div>
+      <div id="live-container"></div>
+    `, 'exams');
+    const el = document.getElementById('live-container');
+    if (!el) { UI.alert('Live container missing.', 'Error'); return; }
+    try {
+      Dashboard.renderLiveDashboard(el, examId, null);
+    } catch (e) {
+      console.error(e);
+      el.innerHTML = `<div class="card"><p style="color:var(--danger)">${escapeHtml(e.message || String(e))}</p></div>`;
+    }
+  },
+
+  async showExamInvites(examId) {
+    const exam = await Exam.getExam(examId);
+    this.renderShell(`
+      <h2 class="page-title">Invite to: ${escapeHtml(exam?.title || '')}</h2>
+      <p class="page-subtitle">Personal emails invited here can only take this exam.</p>
+      <div class="card">
+        <div class="form-group"><label>Email</label>
+          <input id="invite-email" class="form-control" placeholder="student@gmail.com" /></div>
+        <button class="btn btn-primary" id="invite-btn">Invite</button>
+        <button class="btn btn-ghost" onclick="App.showInstructorHome()">Back</button>
+        <p id="invite-msg" class="mt-1 text-muted"></p>
+      </div>
+      <div class="card mt-2"><div id="invites-list">Loading...</div></div>
+    `, 'exams');
+    document.getElementById('invite-btn').onclick = async () => {
+      try {
+        const res = await Auth.inviteStudentToExam(examId, exam?.title, document.getElementById('invite-email').value);
+        document.getElementById('invite-msg').textContent = res.message;
+        this.loadExamInvitesList(examId);
+      } catch (e) {
+        document.getElementById('invite-msg').textContent = e.message;
+      }
+    };
+    this.loadExamInvitesList(examId);
+  },
+
+  async loadExamInvitesList(examId) {
+    const el = document.getElementById('invites-list');
+    const invites = await Auth.listExamInvites(examId);
+    el.innerHTML = invites.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Email</th><th></th></tr></thead><tbody>
+      ${invites.map(i => `<tr><td>${escapeHtml(i.email)}</td>
+        <td><button class="btn btn-sm btn-danger" onclick="App.removeExamInvite('${examId}','${escapeHtml(i.email)}')">Remove</button></td></tr>`).join('')}
+    </tbody></table></div>` : '<p class="text-muted">No invites.</p>';
+  },
+
+  async removeExamInvite(examId, email) {
+    if (!(await UI.confirm('Remove this invite?', 'Remove invite'))) return;
+    await Auth.removeExamInvite(examId, email);
+    this.loadExamInvitesList(examId);
+  },
+
+  async showProctors(examId) {
+    const exam = await Exam.getExam(examId);
+    this.renderShell(`
+      <h2 class="page-title">Proctors — ${escapeHtml(exam?.title || '')}</h2>
+      <p class="page-subtitle">Assign emails as temporary proctors. Students are distributed evenly. Access ends when the exam ends.</p>
+      <div class="card">
+        <div class="form-group">
+          <label>Proctor emails (comma-separated)</label>
+          <textarea id="proctor-emails" class="form-control" rows="3" placeholder="a@laverdad.edu.ph, b@laverdad.edu.ph">${escapeHtml((exam.proctors||[]).map(p=>p.email).join(', '))}</textarea>
+        </div>
+        <div class="action-btns">
+          <button class="btn btn-primary" id="save-proctors">Save & distribute</button>
+          <button class="btn btn-ghost" onclick="App.showInstructorHome()">Back</button>
+        </div>
+        <p id="proctor-msg" class="mt-1 text-muted"></p>
+      </div>
+      <div class="card mt-2" id="proctor-list"></div>
+    `, 'exams');
+    document.getElementById('save-proctors').onclick = async () => {
+      const raw = document.getElementById('proctor-emails').value;
+      const emails = raw.split(/[,;\n]/).map(s => s.trim()).filter(Boolean);
+      try {
+        const proctors = await Exam.setProctors(examId, emails);
+        document.getElementById('proctor-msg').textContent = 'Saved. ' + proctors.length + ' proctor(s).';
+        this.renderProctorList(proctors);
+      } catch (e) {
+        document.getElementById('proctor-msg').textContent = e.message;
+      }
+    };
+    this.renderProctorList(exam.proctors || []);
+  },
+
+  renderProctorList(proctors) {
+    const el = document.getElementById('proctor-list');
+    if (!el) return;
+    el.innerHTML = proctors.length ? proctors.map(p =>
+      `<div class="card"><strong>${escapeHtml(p.email)}</strong>
+        <div class="text-muted">Assigned students: ${(p.studentIds||[]).length}</div></div>`
+    ).join('') : '<p class="text-muted">No proctors assigned.</p>';
+  },
+
+  // ---- Proctor home ----
+  async showProctorHome() {
+    const assignments = Auth.proctorAssignments || await Auth.resolveProctorState(Auth.currentUser);
+    this.renderShell(`
+      <h2 class="page-title">Proctor assignments</h2>
+      <p class="page-subtitle">You only see students assigned to you. Access ends when the exam ends.</p>
+      <div id="proctor-exams"></div>
+    `, 'proctor');
+    const el = document.getElementById('proctor-exams');
+    if (!assignments.length) {
+      el.innerHTML = '<div class="empty-state">No active proctor assignments.</div>';
+      return;
+    }
+    el.innerHTML = assignments.map(a => `
+      <div class="card">
+        <strong>${escapeHtml(a.examTitle || a.examId)}</strong>
+        <div class="text-muted">Students assigned: ${(a.studentIds||[]).length}</div>
+        <button class="btn btn-primary mt-1" onclick="App.openProctorLive('${a.examId}')">Open live view</button>
+      </div>`).join('');
+  },
+
+  openProctorLive(examId) {
+    const a = (Auth.proctorAssignments || []).find(x => x.examId === examId);
+    this.renderShell(`<div id="live-container"></div>`, 'proctor');
+    Dashboard.renderLiveDashboard(document.getElementById('live-container'), examId, a?.studentIds || []);
+  },
+
+  // ---- Student ----
+  showStudentHome() {
+    document.getElementById('student-chat-fab')?.remove();
+    if (this._sessionWatchUnsub) { try { this._sessionWatchUnsub(); } catch(_){} this._sessionWatchUnsub = null; }
+    this.renderShell(`
+      <h2 class="page-title">Student Portal</h2>
+      <p class="page-subtitle">Open the assessment link shared by your instructor. You cannot create new assessments — only mock practice from your history.</p>
+      <div class="card">
+        <div class="action-btns">
+          <button class="btn btn-primary" onclick="App.showStudentHistory()">📚 Assessment History</button>
+          <button class="btn btn-ghost" onclick="App.showMockExam()">🎲 Mock History</button>
+        </div>
+      </div>
+      <div class="card mt-2">
+        <h3>Results overview</h3>
+        <p class="text-muted">Charts per subject will appear here as you complete assessments.</p>
+        <div id="student-results-dash" class="text-muted">Complete assessments to see your progress.</div>
+      </div>
+    `, 'student');
+  },
+
+  async withLoading(fn, msg = 'Loading…') {
+    try { UI.showLoading(msg); } catch (_) {}
+    try { return await fn(); }
+    finally { try { UI.hideLoading(); } catch (_) {} }
+  },
+
+  async showStudentHistory() {
+    this._mockSelectMode = false;
+    try { UI.showLoading('Loading assessments…'); } catch (_) {}
+    this.renderShell(`
+      <h2 class="page-title">Assessment History</h2>
+      <div class="hist-section">
+        <div class="hist-head-row">
+          <h3 style="margin:0">Code assessments</h3>
+          <input type="search" id="hist-filter-code" class="form-control hist-filter-right" placeholder="Filter code assessments..." />
+        </div>
+        <div id="hist-code" class="table-wrap mt-2"><p class="text-muted" style="text-align:left">Loading…</p></div>
+      </div>
+      <div class="hist-section mt-2">
+        <div class="hist-head-row">
+          <h3 style="margin:0">Regular assessments</h3>
+          <input type="search" id="hist-filter-reg" class="form-control hist-filter-right" placeholder="Filter regular assessments..." />
+        </div>
+        <div id="hist-reg" class="table-wrap mt-2">Loading...</div>
+      </div>
+    `, 'history');
+
+    const sessions = (await Exam.listStudentSessions(Auth.currentUser.uid)).filter(s => !s.isMock);
+    window._histSessions = sessions;
+
+    const renderTables = () => {
+      const qCode = (document.getElementById('hist-filter-code')?.value || '').toLowerCase();
+      const qReg = (document.getElementById('hist-filter-reg')?.value || '').toLowerCase();
+      const code = sessions.filter(s => (s.examType || 'code') === 'code');
+      const reg = sessions.filter(s => (s.examType || '') === 'regular');
+      const showCb = this._mockSelectMode;
+
+      const table = (list, filter) => {
+        const filtered = list.filter(s => {
+          const title = (s.examTitle || s.subject || '').toLowerCase();
+          return !filter || title.includes(filter) || (s.subject || '').toLowerCase().includes(filter);
+        });
+        if (!filtered.length) return '<p class="text-muted" style="text-align:left">No assessments in this section.</p>';
+        return `<table class="table" style="text-align:left"><thead><tr>
+          ${showCb ? '<th class="mock-pick-col"></th>' : ''}
+          <th>Title</th><th>Subject</th><th>Total</th><th>Correct</th><th>Incorrect</th><th>Unattempted</th><th>Submitted</th>
+        </tr></thead><tbody>${filtered.map(s => {
+          const title = s.examTitle || s.subject || 'Assessment';
+          const st = App.computeAttemptStats(s, null);
+          return `<tr class="hist-row" data-open="${s.id}">
+            ${showCb ? `<td class="mock-pick-col" onclick="event.stopPropagation()"><input type="checkbox" class="mock-pick" data-sid="${s.id}" data-eid="${s.examId||''}" /></td>` : ''}
+            <td>${escapeHtml(title)}</td>
+            <td>${escapeHtml(s.subject || '—')}</td>
+            <td>${st.total}</td>
+            <td>${st.correct}</td>
+            <td>${st.incorrect}</td>
+            <td>${st.unattempted}</td>
+            <td>${s.submittedAt?.toDate ? s.submittedAt.toDate().toLocaleString() : '—'}</td>
+          </tr>`;
+        }).join('')}</tbody></table>`;
+      };
+
+      document.getElementById('hist-code').innerHTML = table(code, qCode);
+      document.getElementById('hist-reg').innerHTML = table(reg, qReg);
+      document.querySelectorAll('tr.hist-row[data-open]').forEach(tr => {
+        tr.onclick = () => App.showStudentAttempt(tr.getAttribute('data-open'));
+      });
+    };
+
+    renderTables();
+    document.getElementById('hist-filter-code').oninput = renderTables;
+    document.getElementById('hist-filter-reg').oninput = renderTables;
+    try { UI.hideLoading(); } catch (_) {}
+
+    const startMockFlow = async (type) => {
+      if (!this._mockSelectMode) {
+        this._mockSelectMode = true;
+        renderTables();
+        await UI.alert('Select assessments with the checkboxes, then click Create mock exam again.', 'Select assessments');
+        return;
+      }
+      const boxes = [...document.querySelectorAll('.mock-pick:checked')].filter(cb => {
+        const s = sessions.find(x => x.id === cb.getAttribute('data-sid'));
+        if (!s) return false;
+        return type === 'code' ? (s.examType || 'code') === 'code' : (s.examType || '') === 'regular';
+      });
+      if (!boxes.length) {
+        await UI.alert('Select at least one assessment.', 'Mock exam');
+        return;
+      }
+      const name = await UI.prompt('Mock exam name:', 'My mock exam', 'Mock exam', 'Name');
+      if (name == null) return;
+      const mins = await UI.prompt('Time limit (minutes):', '30', 'Mock exam', 'Minutes');
+      if (mins == null) return;
+      await this.startMockFromSessions(boxes.map(b => b.getAttribute('data-sid')), type, {
+        title: String(name).trim() || 'Mock exam',
+        durationMinutes: Math.max(5, Number(mins) || 30)
+      });
+    };
+    // Create mock exam is on Mock History page
+  },
+
+  async showMockHistory() {
+    this.renderShell(`
+      <div class="card-header page-header-responsive" style="align-items:center">
+        <h2 class="page-title" style="margin:0">Mock History</h2>
+        <button type="button" class="btn btn-primary" id="btn-create-mock">Create mock exam</button>
+      </div>
+      <div id="mock-hist-table" class="table-wrap mt-2">
+        <table class="table mock-hist-table" style="text-align:left"><thead><tr>
+          <th>Title</th><th>Subject</th><th>Score</th><th>Max</th><th>Time taken</th><th class="mock-actions-col">Actions</th>
+        </tr></thead><tbody>
+          <tr class="skeleton-row"><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+          <tr class="skeleton-row"><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+        </tbody></table>
+      </div>
+    `, 'mock');
+    document.getElementById('btn-create-mock').onclick = () => this.openCreateMockModal();
+    let sessions = [];
+    try { sessions = (await Exam.listStudentSessions(Auth.currentUser.uid)).filter(s => s.isMock === true); } catch (_) {}
+    const el = document.getElementById('mock-hist-table');
+    if (!sessions.length) {
+      el.innerHTML = '<p class="text-muted" style="text-align:left">No mock assessments yet. Create one from Assessments.</p>';
+      return;
+    }
+    el.innerHTML = `<table class="table mock-hist-table" style="text-align:left"><thead><tr>
+      <th>Title</th><th>Subject</th><th>Score</th><th>Max</th><th>Time taken</th><th class="mock-actions-col">Actions</th>
+    </tr></thead><tbody>${sessions.map(s => {
+      const mins = s.durationMs ? Math.round(s.durationMs / 60000) : (s.timeTakenMinutes != null ? s.timeTakenMinutes : '—');
+      const sc = s.score != null ? s.score : (s.correctCount != null ? s.correctCount : '—');
+      const mx = s.maxScore != null ? s.maxScore : (s.totalQuestions != null ? s.totalQuestions : '—');
+      return `<tr>
+        <td>${escapeHtml(s.examTitle || 'Mock')}</td>
+        <td>${escapeHtml(s.subject || '—')}</td>
+        <td>${sc}</td>
+        <td>${mx}</td>
+        <td>${mins !== '—' ? mins + ' min' : '—'}</td>
+        <td class="action-btns mock-actions-right">
+          <button class="btn btn-sm btn-ghost" onclick="App.showStudentAttempt('${s.id}')">View</button>
+          <button class="btn btn-sm btn-primary" onclick="App.retakeMock('${s.id}')">Retake</button>
+          <button class="btn btn-sm btn-danger" data-mock-del="${s.id}" data-mock-title="${escapeHtml(s.examTitle || 'Mock')}">Delete</button>
+        </td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
+    el.querySelectorAll('[data-mock-del]').forEach(btn => {
+      btn.onclick = () => App.deleteMock(btn.getAttribute('data-mock-del'), btn.getAttribute('data-mock-title') || 'Mock');
+    });
+  },
+
+
+  async openCreateMockModal() {
+    try { UI.showLoading('Loading assessments…'); } catch (_) {}
+    let sessions = [];
+    try {
+      sessions = await Exam.listStudentSessions(Auth.currentUser.uid);
+    } catch (e) {
+      console.warn(e);
+    } finally {
+      try { UI.hideLoading(); } catch (_) {}
+    }
+    sessions = (sessions || []).filter(s => !s.isMock && (s.status === 'submitted' || s.status === 'ended'));
+    const codeS = sessions.filter(s => (s.examType || 'code') === 'code');
+    const regS = sessions.filter(s => (s.examType || '') === 'regular');
+    const row = (s) => `<label class="mock-modal-row" style="display:flex;gap:0.5rem;align-items:center;padding:0.45rem 0;border-bottom:1px solid var(--border);cursor:pointer">
+      <input type="checkbox" class="mock-pick-modal" data-sid="${s.id}" data-type="${s.examType||'code'}" />
+      <span style="flex:1;text-align:left">${escapeHtml(s.examTitle || 'Assessment')}
+        <span class="text-muted" style="font-size:0.8rem"> · ${escapeHtml(s.subject||'')}</span>
+      </span>
+      <span class="text-muted" style="font-size:0.8rem">${s.score != null ? s.score : '—'}/${s.maxScore != null ? s.maxScore : '—'}</span>
+    </label>`;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay ui-modal-overlay';
+    overlay.id = 'create-mock-modal';
+    overlay.innerHTML = `<div class="modal ui-modal" style="max-width:560px;max-height:85vh;display:flex;flex-direction:column">
+      <h2 style="margin-top:0;text-align:center">Create mock exam</h2>
+      <input type="search" class="form-control" id="mock-modal-filter" placeholder="Filter assessments…" style="margin-bottom:0.5rem" />
+      <div id="mock-modal-list" style="overflow-y:auto;flex:1;min-height:120px;max-height:40vh;text-align:left">
+        ${regS.length ? '<div class="text-muted" style="font-size:0.75rem;margin:0.35rem 0">Regular</div>' + regS.map(row).join('') : ''}
+        ${codeS.length ? '<div class="text-muted" style="font-size:0.75rem;margin:0.35rem 0">Code</div>' + codeS.map(row).join('') : ''}
+        ${!sessions.length ? '<p class="text-muted">No completed assessments yet. Finish an assessment first.</p>' : ''}
+      </div>
+      <div class="modal-actions action-btns" style="margin-top:0.75rem;justify-content:center">
+        <button type="button" class="btn btn-ghost" id="mock-modal-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="mock-modal-go">Create mock assessment</button>
+      </div>
+    </div>`;
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    document.body.appendChild(overlay);
+    document.getElementById('mock-modal-cancel').onclick = () => overlay.remove();
+    document.getElementById('mock-modal-filter').oninput = (e) => {
+      const q = e.target.value.toLowerCase();
+      overlay.querySelectorAll('.mock-modal-row').forEach(r => {
+        r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none';
+      });
+    };
+    document.getElementById('mock-modal-go').onclick = async () => {
+      const boxes = [...overlay.querySelectorAll('.mock-pick-modal:checked')];
+      if (!boxes.length) { await UI.alert('Select at least one assessment.', 'Mock exam'); return; }
+      const types = new Set(boxes.map(b => b.getAttribute('data-type')));
+      const type = types.has('regular') && !types.has('code') ? 'regular' : (types.has('code') && !types.has('regular') ? 'code' : 'regular');
+      const ids = boxes.map(b => b.getAttribute('data-sid'));
+      // Hide list first so name/time prompts are visible
+      overlay.remove();
+      const name = await UI.prompt('Mock exam name:', 'My mock exam', 'Mock exam', 'Name');
+      if (name == null) return;
+      const mins = await UI.prompt('Time limit (minutes):', '30', 'Mock exam', 'Minutes');
+      if (mins == null) return;
+      try { UI.showLoading('Creating mock assessment…'); } catch (_) {}
+      try {
+        await this.startMockFromSessions(ids, type, {
+          title: String(name).trim() || 'Mock exam',
+          durationMinutes: Math.max(5, Number(mins) || 30)
+        });
+      } finally {
+        try { UI.hideLoading(); } catch (_) {}
+      }
+    };
+  },
+
+  async startMockFromSessions(sessionIds, type, opts = {}) {
+    const allQ = [];
+    for (const sid of sessionIds) {
+      const snap = await window.db.collection('sessions').doc(sid).get();
+      if (!snap.exists) continue;
+      const s = snap.data();
+      let qs = s.questionsSnapshot || [];
+      if (!qs.length && s.examId) {
+        const exam = await Exam.getExam(s.examId);
+        if (exam) qs = Regular.flattenQuestions(exam);
+      }
+      qs.forEach(q => allQ.push({ ...q }));
+    }
+    if (!allQ.length) {
+      await UI.alert('No questions found in the selected assessments.', 'Mock exam');
+      return;
+    }
+    for (let i = allQ.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [allQ[i], allQ[j]] = [allQ[j], allQ[i]];
+    }
+    const mockExam = {
+      id: 'mock_' + Date.now(),
+      title: opts.title || 'Mock exam',
+      examType: type === 'code' ? 'code' : 'regular',
+      subject: 'Mock',
+      sections: [{ id: 'm1', title: 'Mock', instructions: 'Practice mock — randomized from your history.', questions: allQ }],
+      questions: allQ,
+      durationMinutes: opts.durationMinutes || Math.max(30, allQ.length * 2)
+    };
+    const sessionLocal = {
+      id: 'mock_' + Date.now(),
+      examId: mockExam.id,
+      exam: mockExam,
+      answers: {},
+      status: 'active',
+      isMock: true,
+      examTitle: mockExam.title,
+      examType: mockExam.examType,
+      subject: 'Mock',
+      endsAt: Date.now() + Math.max(5, Number(mockExam.durationMinutes) || 30) * 60000,
+      startedAt: Date.now(),
+      durationMinutes: mockExam.durationMinutes,
+      studentId: Auth.currentUser.uid,
+      studentEmail: Auth.userProfile.email,
+      studentName: Auth.userProfile.name || '',
+      questionsSnapshot: allQ,
+      maxScore: allQ.reduce((s, q) => s + (Number(q.points) || 1), 0)
+    };
+    // Persist so Mock History can list / view / retake it (strip nested exam to stay under 1MB)
+    try {
+      const payload = {
+        examId: sessionLocal.examId,
+        examTitle: sessionLocal.examTitle,
+        examType: sessionLocal.examType,
+        subject: sessionLocal.subject,
+        status: 'active',
+        isMock: true,
+        studentId: sessionLocal.studentId,
+        studentEmail: sessionLocal.studentEmail,
+        studentName: sessionLocal.studentName,
+        answers: {},
+        endsAt: sessionLocal.endsAt,
+        startedAt: Date.now(),
+        durationMinutes: sessionLocal.durationMinutes,
+        questionsSnapshot: allQ,
+        maxScore: sessionLocal.maxScore,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+      const ref = await window.db.collection('sessions').add(payload);
+      sessionLocal.id = ref.id;
+    } catch (e) {
+      console.warn('mock persist', e);
+      await UI.alert('Could not save mock session: ' + (e.message || e) + '. You can still practice, but history may not list it.', 'Mock');
+    }
+    // Mock is a real student practice attempt — never instructor testMode
+    window._testMode = false;
+    window._isMockExam = true;
+    sessionLocal.isMock = true;
+    window._mockSessionMeta = { questions: allQ, type: mockExam.examType };
+    if (mockExam.examType === 'regular') return this.startRegularExam(sessionLocal);
+    return this.startCodeExam(sessionLocal);
+  },
+
+  async deleteMock(sessionId, title) {
+    const expected = String(title || 'Mock').trim();
+    const typed = await UI.prompt(
+      'Type the mock assessment title to confirm deletion:\n\n' + expected,
+      '',
+      'Delete mock assessment',
+      expected
+    );
+    if (typed === null) return;
+    if (String(typed).trim() !== expected) {
+      await UI.alert('Title did not match. Deletion cancelled.', 'Delete');
+      return;
+    }
+    if (!(await UI.confirm('Permanently delete this mock assessment?', 'Delete'))) return;
+    try {
+      await window.db.collection('sessions').doc(sessionId).delete();
+      await UI.alert('Mock assessment deleted.', 'Deleted');
+      this.showMockHistory();
+    } catch (e) {
+      await UI.alert(e.message || String(e), 'Error');
+    }
+  },
+
+  async retakeMock(sessionId) {
+    try { UI.showLoading('Preparing retake…'); } catch (_) {}
+    try {
+      const snap = await window.db.collection('sessions').doc(sessionId).get();
+      if (!snap.exists) {
+        await UI.alert('Could not load that mock. Create a new mock from history.', 'Retake');
+        return;
+      }
+      const s = snap.data();
+      let qs = (s.questionsSnapshot || []).map(q => ({ ...q }));
+      if (!qs.length) {
+        await UI.alert('No questions stored for this mock.', 'Retake');
+        return;
+      }
+      for (let i = qs.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [qs[i], qs[j]] = [qs[j], qs[i]];
+      }
+      const title = (s.examTitle || 'Mock') + ' (Retake)';
+      const mins = Number(s.durationMinutes) || Math.max(30, qs.length * 2);
+      // Start directly without re-querying source sessions
+      const mockExam = {
+        id: 'mock_' + Date.now(),
+        title,
+        examType: s.examType || 'regular',
+        subject: 'Mock',
+        sections: [{ id: 'm1', title: 'Mock', instructions: 'Retake — questions randomized.', questions: qs }],
+        questions: qs,
+        durationMinutes: mins
+      };
+      const sessionLocal = {
+        id: 'mock_' + Date.now(),
+        examId: mockExam.id,
+        exam: mockExam,
+        answers: {},
+        status: 'active',
+        isMock: true,
+        examTitle: title,
+        examType: mockExam.examType,
+        subject: 'Mock',
+        endsAt: Date.now() + mins * 60000,
+        startedAt: Date.now(),
+        durationMinutes: mins,
+        studentId: Auth.currentUser.uid,
+        studentEmail: Auth.userProfile.email,
+        studentName: Auth.userProfile.name || '',
+        questionsSnapshot: qs,
+        maxScore: qs.reduce((sum, q) => sum + (Number(q.points) || 1), 0)
+      };
+      try {
+        const ref = await window.db.collection('sessions').add({
+          examId: sessionLocal.examId,
+          examTitle: sessionLocal.examTitle,
+          examType: sessionLocal.examType,
+          subject: 'Mock',
+          status: 'active',
+          isMock: true,
+          studentId: sessionLocal.studentId,
+          studentEmail: sessionLocal.studentEmail,
+          studentName: sessionLocal.studentName,
+          answers: {},
+          endsAt: sessionLocal.endsAt,
+          startedAt: Date.now(),
+          durationMinutes: mins,
+          questionsSnapshot: qs,
+          maxScore: sessionLocal.maxScore,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        sessionLocal.id = ref.id;
+      } catch (e) { console.warn(e); }
+      window._testMode = false;
+      window._isMockExam = true;
+      if (mockExam.examType === 'regular') return this.startRegularExam(sessionLocal);
+      return this.startCodeExam(sessionLocal);
+    } finally {
+      try { UI.hideLoading(); } catch (_) {}
+    }
+  },
+
+
+
+
+  async ensureJsPdf() {
+    const grab = () => {
+      try {
+        if (window.jspdf && window.jspdf.jsPDF) return window.jspdf.jsPDF;
+        if (window.jspdf && typeof window.jspdf === 'function') return window.jspdf;
+        if (typeof window.jsPDF === 'function') return window.jsPDF;
+        if (window.jsPDF && window.jsPDF.jsPDF) return window.jsPDF.jsPDF;
+      } catch (_) {}
+      return null;
+    };
+    let g = grab();
+    if (g) return g;
+    // Wait briefly for sync script already in page
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 50));
+      g = grab();
+      if (g) return g;
+    }
+    const sources = [
+      'js/vendor/jspdf.umd.min.js',
+      './js/vendor/jspdf.umd.min.js',
+      'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js',
+      'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js'
+    ];
+    for (const src of sources) {
+      try {
+        await new Promise((resolve, reject) => {
+          const t = setTimeout(() => reject(new Error('timeout')), 5000);
+          const s = document.createElement('script');
+          s.src = src;
+          s.async = true;
+          s.onload = () => { clearTimeout(t); resolve(); };
+          s.onerror = () => { clearTimeout(t); reject(new Error('fail')); };
+          document.head.appendChild(s);
+        });
+        g = grab();
+        if (g) return g;
+      } catch (_) {}
+    }
+    throw new Error('PDF library not available. Hard-refresh and try again.');
+  },
+
+  /** Always-works export: download printable HTML (Save as PDF from print dialog) */
+  exportHtmlAsPdf(filename, title, bodyHtml) {
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
+      <title>${String(title || 'Export').replace(/</g,'')}</title>
+      <style>
+        body{font-family:"Segoe UI",system-ui,sans-serif;padding:24px;color:#111;line-height:1.45}
+        h1{font-size:18px;margin:0 0 8px} h2{font-size:14px;margin:16px 0 8px}
+        table{border-collapse:collapse;width:100%;font-size:12px}
+        th,td{border:1px solid #ccc;padding:6px 8px;text-align:left;vertical-align:top}
+        th{background:#f3f4f6} .muted{color:#555;font-size:12px}
+        img{max-width:160px;height:auto}
+        @media print{body{padding:0} .no-print{display:none}}
+      </style></head><body>
+      ${bodyHtml}
+      <p class="no-print muted">Tip: Use your browser Print → Save as PDF.</p>
+      <script>setTimeout(function(){try{window.print()}catch(e){}},400)</script>
+      </body></html>`;
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (filename || 'export').replace(/\.pdf$/i, '') + '.html';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // also open print window
+    const w = window.open(url, '_blank');
+    if (w) setTimeout(() => { try { w.print(); } catch (_) {} }, 600);
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  },
+
+  pdfSafeText(s) {
+    return String(s == null ? '' : s)
+      .replace(/[→⟶➔➜➝➞⇨⇒]/g, '->')
+      .replace(/[←⟵⬅⇦⇐]/g, '<-')
+      .replace(/[↔⟷⇔]/g, '<->')
+      .replace(/[•●◦▪▸►◆]/g, '-')
+      .replace(/[“”«»]/g, '"')
+      .replace(/[‘’]/g, "'")
+      .replace(/[–—]/g, '-')
+      .replace(/\uFFFD/g, '')
+      .replace(/[!]'/g, '->')
+      // Preserve newlines (for categorize/match one-item-per-line); collapse other whitespace per line
+      .split(/\r?\n/)
+      .map(line => line.replace(/[ \t\f\v]+/g, ' ').trim())
+      .join('\n')
+      .trim();
+  },
+
+  computeAttemptStats(session, exam) {
+    const questions = session.questionsSnapshot?.length
+      ? session.questionsSnapshot
+      : (exam ? (typeof Regular.flattenQuestions === 'function' ? Regular.flattenQuestions(exam) : (exam.questions || [])) : []);
+    const answers = session.answers || {};
+    // Local backup so F5 does not lose progress if Firestore is slow
+    try {
+      const local = sessionStorage.getItem('lvcc_answers_' + session.id);
+      if (local) {
+        const parsed = JSON.parse(local);
+        if (parsed && typeof parsed === 'object') answers = { ...parsed, ...answers };
+      }
+    } catch (_) {}
+
+    // Prefer live grade when we have questions + answers
+    if (questions.length && typeof Regular.gradeAnswers === 'function') {
+      let correct = 0, incorrect = 0, unattempted = 0;
+      const total = questions.length;
+      questions.forEach(q => {
+        if (!q) return;
+        if (q.type === 'essay' || q.type === 'open') {
+          const resp = answers[q.id];
+          const empty = resp === undefined || resp === null || String(resp).trim() === '';
+          if (empty) unattempted++;
+          // answered essay is attempted (manual grade later) — do NOT count as unattempted
+          return;
+        }
+        // passage: count nested
+        if ((q.type === 'passage' || q.isPassageSet) && Array.isArray(q.questions)) {
+          q.questions.forEach(nq => {
+            const resp = answers[nq.id];
+            const empty = resp === undefined || resp === null || resp === '' ||
+              (Array.isArray(resp) && !resp.length) ||
+              (typeof resp === 'object' && !Array.isArray(resp) && !Object.keys(resp || {}).length);
+            if (empty) { unattempted++; return; }
+            if (nq.type === 'essay' || nq.type === 'open') return; // attempted open-ended
+            const r = Regular._gradeOne(nq, resp);
+            if (r.ok) correct++;
+            else incorrect++;
+          });
+          return;
+        }
+        if (q.type === 'wordbox' && Array.isArray(q.questions) && q.questions.length) {
+          q.questions.forEach(kq => {
+            const r = Regular._gradeOne({ ...kq, type: 'wordbox', blanks: kq.blanks }, answers[kq.id] ?? answers[q.id]);
+            const resp = answers[kq.id] ?? answers[q.id];
+            const empty = resp === undefined || resp === null || resp === '' ||
+              (typeof resp === 'object' && !Object.keys(resp || {}).length);
+            if (empty) unattempted++;
+            else if (r.ok) correct++;
+            else incorrect++;
+          });
+          return;
+        }
+        const resp = answers[q.id];
+        const empty = resp === undefined || resp === null || resp === '' ||
+          (Array.isArray(resp) && !resp.length) ||
+          (typeof resp === 'object' && !Array.isArray(resp) && !Object.keys(resp).length);
+        if (empty) { unattempted++; return; }
+        const r = Regular._gradeOne(q, resp);
+        if (r.ok) correct++;
+        else incorrect++;
+      });
+      // Recount total for nested
+      let totalCount = 0;
+      questions.forEach(q => {
+        if ((q.type === 'passage' || q.isPassageSet) && Array.isArray(q.questions)) totalCount += q.questions.length;
+        else if (q.type === 'wordbox' && Array.isArray(q.questions) && q.questions.length) totalCount += q.questions.length;
+        else totalCount += 1;
+      });
+      const accuracy = totalCount ? Math.round((correct / totalCount) * 100) : 0;
+      return { total: totalCount, correct, incorrect, unattempted, accuracy };
+    }
+    // Fallback to stored fields
+    if (session && (session.totalQuestions != null || session.correctCount != null) && (session.correctCount != null || session.score != null)) {
+      const total = Number(session.totalQuestions != null ? session.totalQuestions : session.maxScore) || 0;
+      const correct = Number(session.correctCount != null ? session.correctCount : session.score) || 0;
+      const incorrect = Number(session.incorrectCount) || 0;
+      const unattempted = session.unattemptedCount != null ? Number(session.unattemptedCount) : Math.max(0, total - correct - incorrect);
+      const accuracy = session.accuracy != null ? Number(session.accuracy) : (total ? Math.round((correct / total) * 100) : 0);
+      return { total, correct, incorrect, unattempted, accuracy };
+    }
+    let correct = 0, incorrect = 0, unattempted = 0, total = questions.length;
+    if (!total && session.code != null) {
+      // code assessment single item
+      total = 1;
+      if (session.status === 'submitted') {
+        if (session.score != null && session.maxScore) {
+          correct = session.score >= session.maxScore ? 1 : 0;
+          incorrect = correct ? 0 : 1;
+        } else {
+          unattempted = session.code ? 0 : 1;
+          incorrect = session.code ? 1 : 0;
+        }
+      }
+      return { total, correct, incorrect, unattempted, accuracy: total ? Math.round((correct / total) * 100) : 0 };
+    }
+    questions.forEach(q => {
+      const resp = answers[q.id];
+      const empty = resp === undefined || resp === null || resp === '' || (Array.isArray(resp) && !resp.length);
+      if (empty) { unattempted++; return; }
+      if (q.type === 'essay' || q.type === 'open') {
+        // answered essay is attempted; only empty counts as unattempted
+        return;
+      }
+      try {
+        const g = Regular.gradeAnswers([q], { [q.id]: resp });
+        if ((g.score || 0) >= (g.maxScore || 1)) correct++;
+        else incorrect++;
+      } catch (_) {
+        incorrect++;
+      }
+    });
+    const accuracy = total ? Math.round((correct / total) * 100) : 0;
+    return { total, correct, incorrect, unattempted, accuracy };
+  },
+
+  integrityTypeLabel(type) {
+    const map = {
+      'outside-assessment': 'Clicked outside assessment page',
+      'window-blur': 'Clicked outside assessment page',
+      'tab-hidden': 'Switching tabs: Leaving the assessment window or browser tab',
+      'paste': 'Copying content: Attempting to paste',
+      'copy': 'Copying content: Attempting to copy text or questions',
+      'exited-fullscreen': 'Exiting full-screen mode',
+      'right-click': 'Right-clicking: Opening context menus on the page',
+      'resize': 'Resizing the window',
+      'screen-share-stopped': 'Screen sharing stopped',
+      'second-monitor': 'Connected 2nd Monitor',
+      'multi-monitor': 'Connected 2nd Monitor',
+      'screen-recording': 'Recording screen: Screenshot / snipping / Game Bar / external capture tool detected'
+    };
+    return map[type] || type || '';
+  },
+
+  cleanHistoryPrompt(text) {
+    return String(text || '')
+      .replace(/\{\{\d+\}\}/g, '____')
+      .replace(/\{\{blank\}\}/gi, '____')
+      .trim() || 'Question';
+  },
+
+  formatAnswerDisplay(q, value, isCorrectKey = false) {
+    if (!q) return '—';
+    if (q.type === 'wordbox' || q.type === 'fill') {
+      let blanks = q.blanks || [];
+      if (!blanks.length && q.sentence) {
+        let n = 0;
+        String(q.sentence).replace(/\{([^{}]+)\}/g, (_, w) => {
+          n += 1;
+          blanks.push({ id: String(n), correct: String(w).trim() });
+          return _;
+        });
+      }
+      if (isCorrectKey) {
+        return blanks.map(b => String(Array.isArray(b.correct) ? b.correct[0] : (b.correct || '')).trim()).filter(Boolean).join(', ') || '—';
+      }
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        // Nested child map? flatten one level if values are objects
+        const flat = {};
+        Object.entries(value).forEach(([k, v]) => {
+          if (v && typeof v === 'object' && !Array.isArray(v)) {
+            Object.entries(v).forEach(([bk, bv]) => { flat[bk] = bv; });
+          } else {
+            flat[k] = v;
+          }
+        });
+        const ordered = blanks.map(b => flat[b.id] || flat['b'+b.id] || flat[String(b.id)] || '').filter(x => x != null && String(x).trim() !== '');
+        if (ordered.length) return ordered.map(String).join(', ');
+        return Object.values(flat).filter(v => v != null && String(v).trim() !== '' && typeof v !== 'object').map(String).join(', ') || '—';
+      }
+      return value != null && value !== '' && typeof value !== 'object' ? String(value) : '—';
+    }
+    if (q.type === 'categorize') {
+      const items = q.items || [];
+      const cats = q.categories || [];
+      const nameOfItem = (id) => {
+        const it = items.find(x => String(x.id) === String(id));
+        return (it && (it.name || it.label)) || String(id);
+      };
+      const nameOfCat = (id) => {
+        const c = cats.find(x => String(x.id) === String(id));
+        return (c && (c.name || c.label)) || String(id);
+      };
+      if (isCorrectKey) {
+        return items.map(it => `${it.name || it.label || it.id} -> ${nameOfCat(it.category)}`).join('\n') || '—';
+      }
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return Object.entries(value).map(([itemId, catId]) => `${nameOfItem(itemId)} -> ${nameOfCat(catId)}`).join('\n') || '—';
+      }
+      return value != null ? String(value) : '—';
+    }
+    if (q.type === 'match') {
+      const left = q.left || [];
+      const right = q.right || [];
+      const key = Array.isArray(q.correct) ? q.correct : left.map((_, i) => i);
+      if (isCorrectKey) {
+        return left.map((a, i) => `${a || ('Item '+(i+1))} -> ${right[key[i]] != null ? right[key[i]] : '—'}`).join('\n') || '—';
+      }
+      if (value && typeof value === 'object') {
+        return left.map((a, i) => {
+          const ri = value[i] != null ? value[i] : value[String(i)];
+          const b = ri != null ? right[Number(ri)] : null;
+          return `${a || ('Item '+(i+1))} -> ${b != null ? b : '—'}`;
+        }).join('\n') || '—';
+      }
+      return value != null ? String(value) : '—';
+    }
+    if (q.type === 'passage' || q.isPassageSet) {
+      const kids = q.questions || [];
+      if (isCorrectKey) {
+        return kids.map((kq) => this.formatAnswerDisplay(kq, null, true)).filter(Boolean).join('\n') || '—';
+      }
+      if (value && typeof value === 'object') {
+        return kids.map((kq) => {
+          const v = value[kq.id] != null ? value[kq.id] : value;
+          return this.formatAnswerDisplay(kq, typeof v === 'object' && kq.id ? value[kq.id] : v, false);
+        }).filter(Boolean).join('\n') || '—';
+      }
+      return value != null ? String(value) : '—';
+    }
+    if (q.type === 'table') {
+      const cells = q.cells || {};
+      const blankKeys = Object.keys(cells).filter(k => cells[k] && cells[k].blank).sort();
+      if (isCorrectKey) {
+        return blankKeys.map(k => {
+          const c = cells[k];
+          const ans = Array.isArray(c.correct) ? c.correct[0] : (c.correct || '');
+          return String(ans || '—');
+        }).join('\n') || '—';
+      }
+      if (value && typeof value === 'object') {
+        return blankKeys.map(k => {
+          const v = value[k];
+          return v != null && String(v).trim() !== '' ? String(v) : '—';
+        }).join('\n') || '—';
+      }
+      return value != null ? String(value) : '—';
+    }
+    const rawOpts = q.options || [];
+    const opts = rawOpts.map((o) => (o == null ? '' : String(o).trim()));
+    const labelAt = (i) => {
+      if (i === true || i === 'true') return 'True';
+      if (i === false || i === 'false') return 'False';
+      const n = Number(i);
+      if (!Number.isNaN(n) && n >= 0 && n < rawOpts.length) {
+        const s = opts[n];
+        if (s) return s;
+        return String(rawOpts[n] ?? '') || ('Choice ' + (n + 1));
+      }
+      if (i != null && i !== '') return String(i);
+      return '—';
+    };
+    // Unwrap objects so we never show [object Object]
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      if (value.choice != null) value = value.choice;
+      else if (value.answer != null) value = value.answer;
+      else if (value.selected != null) value = value.selected;
+      else {
+        // last resort: first primitive value
+        const prim = Object.values(value).find(v => v != null && typeof v !== 'object');
+        if (prim != null) value = prim;
+        else return '—';
+      }
+    }
+    if (Array.isArray(value) && (q.type === 'multiple' || q.type === 'multiselect' || q.type === 'dropdown' || q.type === 'truefalse')) {
+      return value.map(labelAt).join(', ') || '—';
+    }
+    if (q.type === 'multiple' || q.type === 'truefalse' || q.type === 'modified_tf' || q.type === 'dropdown' || q.type === 'multiselect') {
+      if (typeof value === 'number' || (typeof value === 'string' && value !== '')) {
+        // fall through to isCorrectKey / labelAt below
+      }
+    }
+
+    if (isCorrectKey) {
+      if (q.type === 'essay') return '(Evaluated by instructor)';
+      if (q.type === 'multiple' || q.type === 'dropdown' || q.type === 'multiselect') {
+        if (q.multiCorrect === true && Array.isArray(q.correct)) {
+          return q.correct.map(labelAt).filter(Boolean).join(', ') || '—';
+        }
+        if (q.correct === undefined || q.correct === null || q.correct === '') return '—';
+        return labelAt(q.correct);
+      }
+      if (q.type === 'truefalse' || q.type === 'modified_tf') {
+        let s = (Number(q.correct) === 0 || q.correct === true || q.correct === 'true') ? 'True' : 'False';
+        if (q.modifiedAnswer) s += ' · ' + q.modifiedAnswer;
+        return s;
+      }
+      if (q.type === 'fill') {
+        if (Array.isArray(q.blanks) && q.blanks.length) {
+          return q.blanks.map((b, i) => {
+            const c = Array.isArray(b.correct) ? b.correct.filter(Boolean).join('/') : (b.correct || '');
+            return 'Blank ' + (i + 1) + ': ' + (c || '—');
+          }).join(' · ');
+        }
+        return q.correct != null && q.correct !== '' ? String(q.correct) : '—';
+      }
+      if (q.correct != null && q.correct !== '') {
+        return typeof q.correct === 'object' ? JSON.stringify(q.correct) : String(q.correct);
+      }
+      return '—';
+    }
+    if (value === undefined || value === null || value === '') return '—';
+    if (q.type === 'essay') return String(value);
+    if (q.type === 'multiple' || q.type === 'dropdown' || q.type === 'multiselect') {
+      if (Array.isArray(value)) return value.map(labelAt).join(', ') || '—';
+      return labelAt(value);
+    }
+    if (q.type === 'truefalse' || q.type === 'modified_tf') {
+      if (typeof value === 'object') {
+        let s = (Number(value.choice) === 0 || value.choice === true || value.choice === 'true') ? 'True' : 'False';
+        if (value.modified) s += ' · ' + value.modified;
+        return s;
+      }
+      return (value == 0 || value === true || value === 'true') ? 'True'
+        : (value == 1 || value === false || value === 'false') ? 'False' : String(value);
+    }
+    if (typeof value === 'object') {
+      try { return JSON.stringify(value); } catch (_) { return String(value); }
+    }
+    return String(value);
+  },
+
+
+  async showStudentAttemptFromObject(session, exam) {
+    try {
+      exam = exam || session.exam || {};
+      session = Object.assign({}, session);
+      session.answers = session.answers || {};
+      session.examTitle = session.examTitle || exam.title || 'Test preview';
+      const stats = this.computeAttemptStats(session, exam);
+      const answers = session.answers;
+      const flat = (typeof Regular !== 'undefined' && Regular.flattenQuestions)
+        ? Regular.flattenQuestions(exam)
+        : (session.questionsSnapshot || exam.questions || []);
+      const rows = [];
+      const matchBlocks = [];
+      const passageBlocks = [];
+      const tableBlocks = [];
+      (flat || []).forEach(q => {
+        if (!q || !q.id) return;
+        const resp = answers[q.id];
+        if (q.type === 'match') {
+          matchBlocks.push({ q, prompt: q.prompt || 'Match', response: this.formatAnswerDisplay(q, resp, false), correct: this.formatAnswerDisplay(q, null, true) });
+        } else if (q.type === 'passage' || q.isPassageSet) {
+          passageBlocks.push({ q });
+        } else if (q.type === 'table' || q.type === 'tablefill') {
+          tableBlocks.push({ q, prompt: q.prompt || 'Table fill' });
+        } else if (q.type === 'categorize') {
+          const items = q.items || [];
+          items.forEach(it => {
+            const studentCat = (resp && typeof resp === 'object') ? (resp[it.id] != null ? resp[it.id] : resp[it.name]) : null;
+            const nameOfCat = (id) => {
+              const c = (q.categories || []).find(x => String(x.id) === String(id));
+              return (c && (c.name || c.label)) || String(id || '—');
+            };
+            rows.push({
+              prompt: it.name || it.label || it.id || 'Item',
+              response: studentCat != null ? ((it.name || it.id) + ' -> ' + nameOfCat(studentCat)) : '—',
+              correct: (it.name || it.id) + ' -> ' + nameOfCat(it.category),
+              q, qType: 'categorize'
+            });
+          });
+        } else {
+          rows.push({
+            prompt: this.cleanHistoryPrompt(q.prompt || q.statement || q.sentence || 'Question'),
+            response: this.formatAnswerDisplay(q, resp, false),
+            correct: this.formatAnswerDisplay(q, null, true),
+            q, qType: q.type || ''
+          });
+        }
+      });
+      const byType = {};
+      rows.forEach(r => {
+        const t = r.qType || 'other';
+        if (!byType[t]) byType[t] = [];
+        byType[t].push(r);
+      });
+      const typeLabel = {
+        multiple: 'Multiple choice', truefalse: 'True or False', modified_tf: 'Modified True or False',
+        fill: 'Fill in the blank', wordbox: 'Word Box', categorize: 'Categorize', essay: 'Open-ended'
+      };
+      const sectionHtml = Object.keys(byType).map((t, si) => {
+        const items = byType[t];
+        return `<div class="result-section card" data-result-sec="${si}">
+          <button type="button" class="result-sec-toggle" data-toggle-sec="${si}">
+            <span>${typeLabel[t] || t}</span><span class="result-chevron">▼</span>
+          </button>
+          <div id="result-sec-${si}" class="result-sec-body">
+            <table class="table result-equal-cols"><thead><tr>
+              <th>Question</th><th>Your Response</th><th>Correct Answer</th>
+            </tr></thead><tbody>
+              ${items.map(r => `<tr class="hist-q-row">
+                <td class="hist-cell-q"><div class="hist-value">${escapeHtml(r.prompt)}</div></td>
+                <td class="hist-cell-r"><div class="hist-value hist-multiline">${escapeHtml(String(r.response||'—')).replace(/\\n/g,'<br>')}</div></td>
+                <td class="hist-cell-c"><div class="hist-value hist-multiline">${escapeHtml(String(r.correct||'—')).replace(/\\n/g,'<br>')}</div></td>
+              </tr>`).join('')}
+            </tbody></table>
+          </div>
+        </div>`;
+      }).join('') || '<p class="text-muted">No scored items.</p>';
+      const specialHtml = this._renderSpecialResultBlocks(session, exam, answers, matchBlocks, passageBlocks, tableBlocks);
+      this.renderShell(`
+        <div class="card-header page-header-responsive">
+          <h2 class="page-title" style="margin:0">${escapeHtml(session.examTitle || 'Test preview')}</h2>
+          <div class="action-btns">
+            <button class="btn btn-ghost" onclick="window.close()">Close tab</button>
+            <button class="btn btn-primary" onclick="App.showInstructorHome()">Back to assessments</button>
+          </div>
+        </div>
+        <p class="text-muted" style="margin:0.5rem 0">Instructor preview — not saved as a student submission.</p>
+        <div class="attempt-stats">
+          <div class="attempt-stat"><div class="val">${stats.total}</div><div class="lbl">Total</div></div>
+          <div class="attempt-stat"><div class="val">${stats.correct}</div><div class="lbl">Correct</div></div>
+          <div class="attempt-stat"><div class="val">${stats.incorrect}</div><div class="lbl">Incorrect</div></div>
+          <div class="attempt-stat"><div class="val">${stats.unattempted}</div><div class="lbl">Unattempted</div></div>
+          <div class="attempt-stat"><div class="val">${stats.accuracy}%</div><div class="lbl">Accuracy</div></div>
+        </div>
+        <div class="result-sections mt-2">${sectionHtml}</div>
+        ${specialHtml || ''}
+      `, 'exams');
+      document.querySelectorAll('[data-toggle-sec]').forEach(btn => {
+        btn.onclick = () => {
+          const body = document.getElementById('result-sec-' + btn.getAttribute('data-toggle-sec'));
+          if (!body) return;
+          const open = body.classList.toggle('collapsed');
+          const ch = btn.querySelector('.result-chevron');
+          if (ch) ch.textContent = open ? '▶' : '▼';
+        };
+      });
+      requestAnimationFrame(() => { try { this._drawMatchResultLines(); } catch (_) {} });
+    } catch (e) {
+      console.error('showStudentAttemptFromObject', e);
+      throw e;
+    }
+  },
+
+  async showStudentAttempt(sessionId) {
+    const snap = await window.db.collection('sessions').doc(sessionId).get();
+    if (!snap.exists) { await UI.alert('Not found.', 'Error'); return; }
+    const session = { id: snap.id, ...snap.data() };
+    const exam = await Exam.getExam(session.examId);
+    let questions = [];
+    if (exam) {
+      questions = Regular.flattenQuestions(exam);
+      if (!questions.length && Array.isArray(exam.questions)) questions = exam.questions;
+    }
+    if (!questions.length && Array.isArray(session.questionsSnapshot)) {
+      questions = session.questionsSnapshot;
+    }
+    const answers = session.answers || {};
+    // Debug-friendly: if still empty but answers exist, list answer keys
+    if (!questions.length && answers && Object.keys(answers).length) {
+      questions = Object.keys(answers).map((id, i) => ({
+        id,
+        type: 'essay',
+        prompt: 'Question ' + (i + 1) + ' (' + id + ')',
+        correct: ''
+      }));
+    }
+    // map by id and by index fallback
+    // Group by section when available
+    let sectionBlocks = [];
+    if (exam && Array.isArray(exam.sections) && exam.sections.length) {
+      sectionBlocks = exam.sections.map(sec => ({
+        title: sec.title || 'Section',
+        questions: (sec.questions || []).slice()
+      }));
+    } else {
+      sectionBlocks = [{ title: '', questions }];
+    }
+    const rows = [];
+    sectionBlocks.forEach(sec => {
+      // Section title only (no instructions text)
+      if (sec.title) {
+        rows.push({ sectionHeader: sec.title });
+      }
+      (sec.questions || []).forEach((q, i) => {
+        let resp = answers[q.id];
+        // Do NOT fall back to answers by index — that mixes responses across question types
+        // Table fill: one history row per blank (no cell indexes)
+        if (q.type === 'table') {
+          const cells = q.cells || {};
+          const blankKeys = Object.keys(cells).filter(k => cells[k] && cells[k].blank).sort();
+          if (blankKeys.length) {
+            // One history row representing the table blanks as a fill-in-the-blank style line
+            const studentParts = blankKeys.map(k => {
+              const v = (resp && typeof resp === 'object') ? (resp[k] ?? '') : '';
+              return v !== '' && v != null ? String(v) : '____';
+            });
+            const correctParts = blankKeys.map(k => {
+              const c = cells[k] || {};
+              const corr = Array.isArray(c.correct) ? c.correct[0] : (c.correct || '');
+              return corr !== '' && corr != null ? String(corr) : '—';
+            });
+            // Also build a readable "row" prompt from data cells + blanks
+            let rowPrompt = this.cleanHistoryPrompt(q.prompt || 'Table fill');
+            const headers = q.headers || [];
+            if (headers.length) rowPrompt += ' [' + headers.filter(Boolean).join(', ') + ']';
+            rows.push({
+              prompt: rowPrompt,
+              response: studentParts.join(', '),
+              correct: correctParts.join(', '),
+              q,
+              qType: 'table'
+            });
+            return;
+          }
+        }
+        // Passage: expand each child question
+        if (q.type === 'passage' || q.isPassageSet) {
+          const kids = q.questions || [];
+          kids.forEach((kq, ki) => {
+            let kresp = (resp && typeof resp === 'object') ? resp[kq.id] : undefined;
+            if (kresp === undefined) kresp = answers[kq.id];
+            rows.push({
+              prompt: this.cleanHistoryPrompt(kq.prompt || kq.statement || ('Passage question ' + (ki + 1))),
+              response: this.formatAnswerDisplay(kq, kresp, false),
+              correct: this.formatAnswerDisplay(kq, null, true),
+              q: kq
+            });
+          });
+          return;
+        }
+        // Wordbox with child questions
+        if (q.type === 'wordbox' && Array.isArray(q.questions) && q.questions.length) {
+          q.questions.forEach((kq, ki) => {
+            let kresp = undefined;
+            if (resp && typeof resp === 'object' && resp[kq.id] != null) kresp = resp[kq.id];
+            else if (answers[kq.id] != null) kresp = answers[kq.id];
+            const qForFmt = {
+              type: 'wordbox',
+              id: kq.id,
+              sentence: kq.sentence || '',
+              blanks: kq.blanks || [],
+              wordBank: q.wordBank || []
+            };
+            // Ensure blanks from {Word} sentence if missing
+            if (!qForFmt.blanks.length && qForFmt.sentence) {
+              let n = 0;
+              String(qForFmt.sentence).replace(/\{([^{}]+)\}/g, (_, w) => {
+                n += 1;
+                qForFmt.blanks.push({ id: String(n), correct: String(w).trim() });
+                return _;
+              });
+            }
+            rows.push({
+              prompt: this.cleanHistoryPrompt(kq.sentence || kq.prompt || ('Wordbox ' + (ki + 1))),
+              response: this.formatAnswerDisplay(qForFmt, kresp, false),
+              correct: this.formatAnswerDisplay(qForFmt, null, true),
+              q: qForFmt,
+              qType: 'wordbox'
+            });
+          });
+          return;
+        }
+        // Categorize / match: one history row per item (not a single paragraph)
+        if (q.type === 'categorize') {
+          const items = q.items || [];
+          const cats = q.categories || [];
+          const nameOfCat = (id) => {
+            const c = cats.find(x => String(x.id) === String(id));
+            return (c && (c.name || c.label)) || String(id || '—');
+          };
+          const nameOfItem = (it) => it.name || it.label || it.id || 'Item';
+          if (items.length) {
+            items.forEach(it => {
+              const studentCat = (resp && typeof resp === 'object')
+                ? (resp[it.id] != null ? resp[it.id] : resp[it.name])
+                : null;
+              rows.push({
+                prompt: nameOfItem(it),
+                response: studentCat != null ? (nameOfItem(it) + ' -> ' + nameOfCat(studentCat)) : '—',
+                correct: nameOfItem(it) + ' -> ' + nameOfCat(it.category),
+                q,
+                qType: 'categorize'
+              });
+            });
+            return;
+          }
+        }
+        if (q.type === 'match') {
+          const left = q.left || [];
+          const right = q.right || [];
+          const key = Array.isArray(q.correct) ? q.correct : left.map((_, i) => i);
+          left.forEach((a, i) => {
+            const ri = (resp && typeof resp === 'object')
+              ? (resp[i] != null ? resp[i] : resp[String(i)])
+              : null;
+            const studB = ri != null ? right[Number(ri)] : null;
+            const corrB = right[key[i]] != null ? right[key[i]] : '—';
+            rows.push({
+              prompt: (a || ('Item ' + (i + 1))),
+              response: (a || ('Item ' + (i + 1))) + ' -> ' + (studB != null ? studB : '—'),
+              correct: (a || ('Item ' + (i + 1))) + ' -> ' + corrB,
+              q,
+              qType: 'match'
+            });
+          });
+          return;
+        }
+        rows.push({
+          prompt: this.cleanHistoryPrompt(q.prompt || q.statement || q.sentence || 'Question'),
+          response: this.formatAnswerDisplay(q, resp, false),
+          correct: this.formatAnswerDisplay(q, null, true),
+          q,
+          qType: q.type || ''
+        });
+      });
+    });
+
+    // code assessment fallback
+    if (!rows.length) {
+      rows.push({
+        prompt: 'Code submission',
+        response: session.code || '—',
+        correct: exam?.answerKey || '—'
+      });
+    }
+
+    const stats = this.computeAttemptStats(session, exam);
+    // Split normal vs special (match, passage, table) for full-width blocks at end
+    const normalRows = [];
+    const matchBlocks = [];
+    const passageBlocks = [];
+    const tableBlocks = [];
+    let curSec = '';
+    rows.forEach(r => {
+      if (r.sectionHeader) { curSec = r.sectionHeader; normalRows.push(r); return; }
+      const t = (r.qType || r.q?.type || '').toLowerCase();
+      if (t === 'match') matchBlocks.push({ ...r, section: curSec });
+      else if (t === 'passage' || r.q?.isPassageSet) passageBlocks.push({ ...r, section: curSec });
+      else if (t === 'table') tableBlocks.push({ ...r, section: curSec });
+      else normalRows.push(r);
+    });
+    // Also expand passage/match/table from answers for richer HTML
+    const specialHtml = this._renderSpecialResultBlocks(session, exam, answers, matchBlocks, passageBlocks, tableBlocks);
+
+    // Group normal rows into collapsible sections
+    const sections = [];
+    let cur = { title: 'Questions', items: [] };
+    normalRows.forEach(r => {
+      if (r.sectionHeader) {
+        if (cur.items.length || cur.title !== 'Questions') sections.push(cur);
+        cur = { title: r.sectionHeader, items: [] };
+      } else cur.items.push(r);
+    });
+    if (cur.items.length || sections.length === 0) sections.push(cur);
+
+    // Drop empty sections (e.g. Match/Table headers with all items moved to special blocks)
+    const sectionHtml = sections.filter(sec => sec.items && sec.items.length).map((sec, si) => `
+      <div class="result-section card" data-result-sec="${si}">
+        <button type="button" class="result-sec-toggle" data-toggle-sec="${si}">
+          <span>${escapeHtml(sec.title)}</span>
+          <span class="result-chevron">▼</span>
+        </button>
+        <div class="result-sec-body" id="result-sec-${si}">
+          <table class="table result-equal-cols">
+            <thead><tr><th>Question</th><th>Your response</th><th>Correct answer</th></tr></thead>
+            <tbody>
+              ${sec.items.map(r => `<tr class="hist-q-row">
+                <td data-label="Question" class="hist-cell-q"><div class="hist-value">${escapeHtml(r.prompt)}</div></td>
+                <td data-label="Response" class="hist-cell-r"><div class="hist-value hist-multiline">${escapeHtml(r.response).replace(/\n/g, '<br>')}</div></td>
+                <td data-label="Correct" class="hist-cell-c"><div class="hist-value hist-multiline">${escapeHtml(r.correct).replace(/\n/g, '<br>')}</div></td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>`).join('');
+
+    this.renderShell(`
+      <div class="card-header page-header-responsive">
+        <h2 class="page-title">${escapeHtml(session.examTitle || exam?.title || 'Attempt')}</h2>
+        <div class="action-btns">
+          <button class="btn btn-ghost" id="export-attempt-pdf">Export PDF</button>
+          <button class="btn btn-ghost" onclick="App.showStudentHistory()">Back</button>
+        </div>
+      </div>
+      <div class="attempt-stats attempt-stats-row">
+        <div class="attempt-stat"><div class="val">${stats.total}</div><div class="lbl">Total</div></div>
+        <div class="attempt-stat"><div class="val">${stats.correct}</div><div class="lbl">Correct</div></div>
+        <div class="attempt-stat"><div class="val">${stats.incorrect}</div><div class="lbl">Incorrect</div></div>
+        <div class="attempt-stat"><div class="val">${stats.unattempted}</div><div class="lbl">Unattempted</div></div>
+        <div class="attempt-stat"><div class="val">${stats.accuracy}%</div><div class="lbl">Accuracy</div></div>
+      </div>
+      <div class="result-sections mt-2">${sectionHtml}</div>
+      ${specialHtml}
+    `, session.isMock ? 'mock' : 'history');
+
+    document.querySelectorAll('[data-toggle-sec]').forEach(btn => {
+      btn.onclick = () => {
+        const body = document.getElementById('result-sec-' + btn.getAttribute('data-toggle-sec'));
+        if (!body) return;
+        const open = body.classList.toggle('collapsed');
+        btn.querySelector('.result-chevron').textContent = open ? '▶' : '▼';
+      };
+    });
+    document.getElementById('export-attempt-pdf').onclick = () => {
+      this.downloadAttemptPdf(session, exam, rows);
+    };
+    document.getElementById('btn-review-scores')?.addEventListener('click', () => {
+      this.openScoreReview(session, exam, questions);
+    });
+    // Connect match result lines after layout
+    requestAnimationFrame(() => this._drawMatchResultLines());
+  },
+
+  _drawMatchResultLines() {
+    document.querySelectorAll('.match-visual-flex').forEach(board => {
+      const svg = board.querySelector('.mres-svg');
+      if (!svg) return;
+      const br = board.getBoundingClientRect();
+      svg.setAttribute('width', br.width);
+      svg.setAttribute('height', br.height);
+      svg.style.position = 'absolute';
+      svg.style.left = '0';
+      svg.style.top = '0';
+      svg.style.width = '100%';
+      svg.style.height = '100%';
+      svg.style.pointerEvents = 'none';
+      svg.innerHTML = '';
+      const pairs = String(board.getAttribute('data-pairs') || '').split(',').filter(Boolean);
+      pairs.forEach(p => {
+        const [li, ri] = p.split(':').map(Number);
+        const a = board.querySelector('.mres-a[data-li="' + li + '"] .mres-dot');
+        const b = board.querySelector('.mres-b[data-ri="' + ri + '"] .mres-dot');
+        if (!a || !b) return;
+        const ar = a.getBoundingClientRect();
+        const bb = b.getBoundingClientRect();
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', ar.left + ar.width / 2 - br.left);
+        line.setAttribute('y1', ar.top + ar.height / 2 - br.top);
+        line.setAttribute('x2', bb.left + bb.width / 2 - br.left);
+        line.setAttribute('y2', bb.top + bb.height / 2 - br.top);
+        line.setAttribute('stroke', '#3b82f6');
+        line.setAttribute('stroke-width', '2.5');
+        svg.appendChild(line);
+      });
+    });
+  },
+
+  _renderSpecialResultBlocks(session, exam, answers, matchBlocks, passageBlocks, tableBlocks) {
+    const esc = escapeHtml;
+    let html = '';
+    // MATCH full width
+    if (matchBlocks.length) {
+      html += `<div class="result-special card mt-2"><h3 class="result-special-title">Match</h3>`;
+      matchBlocks.forEach(r => {
+        const q = r.q || {};
+        const left = q.left || [];
+        const right = q.right || [];
+        const val = answers[q.id];
+        // Build SVG connecting lines (like assessment UI)
+        const pairs = [];
+        left.forEach((a, i) => {
+          const ri = val && typeof val === 'object' ? (val[i] != null ? val[i] : val[String(i)]) : null;
+          if (ri != null && !Number.isNaN(Number(ri))) pairs.push({ li: i, ri: Number(ri) });
+        });
+        const leftHtml = left.map((a, i) => `<div class="mres-item mres-a" data-li="${i}"><span class="mres-text">${esc((i+1)+'. '+(a||''))}</span><span class="mres-dot"></span></div>`).join('');
+        const rightHtml = right.map((b, i) => `<div class="mres-item mres-b" data-ri="${i}"><span class="mres-dot"></span><span class="mres-text">${esc(b||'')}</span></div>`).join('');
+        const pairData = pairs.map(p => p.li + ':' + p.ri).join(',');
+        html += `<div class="match-result-block">
+          <p class="match-result-instr"><strong>${esc(q.prompt || 'Match')}</strong></p>
+          <div class="match-visual-flex" data-pairs="${pairData}">
+            <div class="mres-col mres-col-a">${leftHtml}</div>
+            <svg class="mres-svg"></svg>
+            <div class="mres-col mres-col-b">${rightHtml}</div>
+          </div>
+        </div>`;
+      });
+      html += `</div>`;
+    }
+    // PASSAGE full width
+    if (passageBlocks.length) {
+      html += `<div class="result-special card mt-2"><h3 class="result-special-title">Passage</h3>`;
+      // Group by parent passage if possible
+      const seen = new Set();
+      const flat = Regular.flattenQuestions ? Regular.flattenQuestions(exam || session) : [];
+      let passages = (exam?.sections || []).flatMap(s => (s.questions||[]).filter(q => q.type==='passage' || q.isPassageSet));
+      if (!passages.length && Array.isArray(session.questionsSnapshot)) {
+        passages = session.questionsSnapshot.filter(q => q && (q.type === 'passage' || q.isPassageSet));
+      }
+      if (!passages.length && Array.isArray(exam?.questions)) {
+        passages = exam.questions.filter(q => q && (q.type === 'passage' || q.isPassageSet));
+      }
+      // Also from matchBlocks source: passage questions embedded in flatten
+      if (!passages.length) {
+        const flat = Regular.flattenQuestions ? Regular.flattenQuestions(exam || { questions: session.questionsSnapshot || [] }) : (session.questionsSnapshot || []);
+        passages = (flat || []).filter(q => q && (q.type === 'passage' || q.isPassageSet));
+      }
+      const passList = passages.length ? passages : [];
+      if (passList.length) {
+        passList.forEach(pq => {
+          let tabs = pq.passages || [];
+          if (!tabs.length && (pq.passageHtml || pq.html || pq.content)) {
+            tabs = [{ html: pq.passageHtml || pq.html || pq.content || '', title: pq.title || 'Passage' }];
+          }
+          if (!tabs.length) tabs = [{ html: '', title: 'Passage' }];
+          html += `<div class="passage-result-block">`;
+          tabs.forEach((t, ti) => {
+            const body = t.html || t.content || pq.passageHtml || pq.html || '';
+            html += `<div class="passage-tab-label">${esc(t.title || ('Passage '+(ti+1)))}</div>
+              <div class="passage-result-html">${body || '<p class="text-muted">(No passage content stored for this attempt)</p>'}</div>`;
+          });
+          (pq.questions || []).forEach(kq => {
+            const resp = answers[kq.id] != null ? answers[kq.id] : (answers[pq.id] && answers[pq.id][kq.id]);
+            html += `<div class="passage-result-q">
+              <div><strong>${esc(kq.prompt || 'Question')}</strong></div>
+              <div class="text-muted" style="font-size:0.85rem">Your response</div>
+              <div>${esc(this.formatAnswerDisplay(kq, resp, false))}</div>
+              <div class="text-muted" style="font-size:0.85rem">Correct answer</div>
+              <div style="color:var(--success,#16a34a)">${esc(this.formatAnswerDisplay(kq, null, true))}</div>
+            </div>`;
+          });
+          html += `</div>`;
+        });
+      } else {
+        passageBlocks.forEach(r => {
+          html += `<div class="passage-result-q">
+            <div><strong>${esc(r.prompt)}</strong></div>
+            <div class="text-muted">Your response</div><div>${esc(r.response)}</div>
+            <div class="text-muted">Correct answer</div><div style="color:var(--success,#16a34a)">${esc(r.correct)}</div>
+          </div>`;
+        });
+      }
+      html += `</div>`;
+    }
+    // TABLE FILL full width
+    if (tableBlocks.length) {
+      html += `<div class="result-special card mt-2"><h3 class="result-special-title">Table fill</h3>`;
+      tableBlocks.forEach(r => {
+        const q = r.q || {};
+        const cells = q.cells || {};
+        const rowsN = Number(q.rows) || 0;
+        const colsN = Number(q.cols) || 0;
+        const headers = q.headers || [];
+        const tableRows = q.tableRows || null;
+        const resp = answers[q.id] || {};
+        let tableHtml = `<p>${esc(q.prompt || 'Table fill')}</p><table class="table tf-result-table"><tbody>`;
+        if (headers.length) {
+          tableHtml += '<tr class="tf-header-row">' + headers.map(h => `<th>${esc(h)}</th>`).join('') + '</tr>';
+        }
+        const blankKeys = Object.keys(cells).filter(k => cells[k] && cells[k].blank);
+        const correctList = [];
+        if (tableRows && tableRows.length) {
+          let dataIdx = 0;
+          tableRows.forEach((tr) => {
+            if (tr.type === 'subheader') {
+              const label = tr.label || (tr.values && tr.values.filter(Boolean).join(' / ')) || '';
+              tableHtml += `<tr class="tf-subheader-row"><td colspan="${colsN || headers.length || 1}">${esc(label)}</td></tr>`;
+              return;
+            }
+            const r = dataIdx++;
+            tableHtml += '<tr>';
+            for (let c = 0; c < (colsN || headers.length || (tr.cells||[]).length || 1); c++) {
+              const key = r + '-' + c;
+              const cell = cells[key] || cells[r + '_' + c] || {};
+              if (cell.blank) {
+                const stud = resp[key] != null ? String(resp[key]) : (resp[r + '_' + c] != null ? String(resp[r + '_' + c]) : '');
+                const corr = Array.isArray(cell.correct) ? cell.correct[0] : (cell.correct || '');
+                const ok = stud.trim().toLowerCase() === String(corr).trim().toLowerCase();
+                const bn = correctList.length + 1;
+                tableHtml += `<td class="${ok ? 'tf-cell-ok' : 'tf-cell-bad'}">(${bn}) ${esc(stud || '—')}</td>`;
+                correctList.push({ n: bn, corr: String(corr || '—') });
+              } else {
+                const val = (tr.cells && tr.cells[c] != null) ? tr.cells[c]
+                  : (tr.values && tr.values[c] != null) ? tr.values[c]
+                  : (cell.value || '');
+                tableHtml += `<td>${esc(val)}</td>`;
+              }
+            }
+            tableHtml += '</tr>';
+          });
+        } else {
+          // fallback single row of blanks
+          tableHtml += '<tr>' + blankKeys.map(k => {
+            const stud = resp[k] != null ? String(resp[k]) : '';
+            const c = cells[k] || {};
+            const corr = Array.isArray(c.correct) ? c.correct[0] : (c.correct || '');
+            const ok = stud.trim().toLowerCase() === String(corr).trim().toLowerCase();
+            const bn = correctList.length + 1;
+            correctList.push({ n: bn, corr: String(corr || '—') });
+            return `<td class="${ok ? 'tf-cell-ok' : 'tf-cell-bad'}">(${bn}) ${esc(stud || '—')}</td>`;
+          }).join('') + '</tr>';
+        }
+        tableHtml += '</tbody></table>';
+        const corrLines = correctList.map(x => typeof x === 'object'
+          ? `(${x.n}) ${esc(x.corr)}`
+          : esc(String(x))
+        ).join('<br/>');
+        tableHtml += `<div class="tf-correct-key"><strong>Correct answers:</strong><br/>${corrLines || '—'}</div>`;
+        html += tableHtml;
+      });
+      html += `</div>`;
+    }
+    return html;
+  },
+
+  async downloadAttemptPdf(session, exam, rows) {
+    const title = session.examTitle || exam?.title || 'Assessment Results';
+    const name = session.studentName || session.studentEmail || 'Student';
+    const st = this.computeAttemptStats(session, exam);
+    const pct = st.accuracy != null ? st.accuracy : 0;
+    const fname = 'Assessment_Results_' + String(name).replace(/[^\w\-]+/g, '_').slice(0, 40) + '.pdf';
+
+    try { UI.showLoading('Generating PDF…'); } catch (_) {}
+    const clearLoad = () => {
+      try { UI.hideLoading(); } catch (_) {}
+      const el = document.getElementById('global-loading');
+      if (el) { el.classList.remove('visible'); el.style.display = 'none'; }
+      document.querySelectorAll('.global-loading, #pdf-export-clone').forEach(n => {
+        try { if (n.id === 'pdf-export-clone') n.remove(); } catch (_) {}
+      });
+    };
+
+    // Prefer screenshot of on-screen result so PDF matches UI (passage, match lines, tables)
+    const tryHtmlCapture = async () => {
+      const src = document.querySelector('.result-sections')?.parentElement || document.getElementById('main-content');
+      if (!src) return false;
+      let h2c = window.html2canvas;
+      if (!h2c) {
+        await new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+          s.onload = resolve; s.onerror = reject; document.head.appendChild(s);
+        }).catch(() => null);
+        h2c = window.html2canvas;
+      }
+      if (!h2c) return false;
+      const JsPDF = await this.ensureJsPdf();
+      const clone = src.cloneNode(true);
+      clone.id = 'pdf-export-clone';
+      clone.style.cssText = 'position:fixed;left:0;top:0;width:800px;background:#fff;color:#0f172a;z-index:-1;padding:16px;';
+      // force light printable colors
+      clone.querySelectorAll('*').forEach(el => {
+        el.style.boxShadow = 'none';
+      });
+      document.body.appendChild(clone);
+      // redraw match lines on clone
+      try { this._drawMatchResultLines(); } catch (_) {}
+      await new Promise(r => setTimeout(r, 120));
+      const canvas = await h2c(clone, { scale: 1.5, useCORS: true, backgroundColor: '#ffffff', logging: false });
+      clone.remove();
+      const doc = new JsPDF({ unit: 'mm', format: 'a4' });
+      const pageW = 210, pageH = 297, margin = 10;
+      const imgW = pageW - margin * 2;
+      const imgH = (canvas.height * imgW) / canvas.width;
+      const pageContentH = pageH - margin * 2;
+      let heightLeft = imgH;
+      let y = margin;
+      const imgData = canvas.toDataURL('image/jpeg', 0.92);
+      // Header on first page
+      doc.setFillColor(11, 18, 32);
+      doc.rect(0, 0, 210, 18, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(12);
+      doc.text('ASSESSMENT RESULTS', 14, 12);
+      y = 22;
+      let position = y;
+      doc.addImage(imgData, 'JPEG', margin, position, imgW, imgH);
+      heightLeft -= (pageH - position - margin);
+      while (heightLeft > 0) {
+        position = heightLeft - imgH + margin;
+        doc.addPage();
+        doc.setFillColor(11, 18, 32);
+        doc.rect(0, 0, 210, 18, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.setFontSize(11);
+        doc.text('ASSESSMENT RESULTS (cont.)', 14, 12);
+        doc.addImage(imgData, 'JPEG', margin, 22 + (position - margin), imgW, imgH);
+        heightLeft -= (pageH - 22 - margin);
+      }
+      doc.save(fname);
+      return true;
+    };
+
+    try {
+      const ok = await tryHtmlCapture();
+      if (ok) { clearLoad(); return; }
+    } catch (e) {
+      console.warn('html capture PDF failed, structured fallback', e);
+    }
+
+    try {
+      const JsPDF = await Promise.race([
+        this.ensureJsPdf(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('PDF library timeout')), 8000))
+      ]);
+      const doc = new JsPDF({ unit: 'mm', format: 'a4' });
+      const pageH = 297;
+      const ensureSpace = (need) => {
+        if (y + need > pageH - 14) {
+          doc.addPage();
+          doc.setFillColor(11, 18, 32);
+          doc.rect(0, 0, 210, 18, 'F');
+          doc.setTextColor(255, 255, 255);
+          doc.setFontSize(11);
+          doc.text('ASSESSMENT RESULTS (cont.)', 14, 12);
+          y = 26;
+        }
+      };
+      doc.setFillColor(11, 18, 32);
+      doc.rect(0, 0, 210, 28, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(14);
+      doc.text('ASSESSMENT RESULTS', 14, 14);
+      doc.setFontSize(10);
+      doc.setTextColor(180, 190, 200);
+      doc.text(this.pdfSafeText(name), 14, 22);
+      doc.setTextColor(15, 23, 42);
+      let y = 36;
+      doc.setFontSize(12);
+      doc.setFont(undefined, 'bold');
+      doc.text(String(title).slice(0, 90), 14, y);
+      y += 8;
+      doc.setFont(undefined, 'normal');
+      doc.setFontSize(9);
+      doc.text(
+        'Total: ' + st.total + '   Correct: ' + st.correct + '   Incorrect: ' + st.incorrect +
+        '   Unattempted: ' + st.unattempted + '   Accuracy: ' + pct + '%',
+        14, y
+      );
+      y += 10;
+
+      const typeLabel = {
+        multiple: 'Multiple choice', truefalse: 'True or False', modified_tf: 'Modified True or False',
+        fill: 'Fill in the blank', wordbox: 'Word Box', categorize: 'Categorize', essay: 'Open-ended',
+        match: 'Match', passage: 'Passage', table: 'Table fill', tablefill: 'Table fill'
+      };
+      const skipTypes = new Set(['match', 'passage', 'table', 'tablefill']);
+      const groups = {};
+      (rows || []).forEach(r => {
+        if (r.sectionHeader) return;
+        const t = (r.qType || r.q?.type || 'other').toLowerCase();
+        if (skipTypes.has(t)) return; // special blocks handle these
+        if (!groups[t]) groups[t] = [];
+        groups[t].push(r);
+      });
+
+      const writeSection = (label, writeBody) => {
+        // Estimate: header 10 + at least 20 body
+        ensureSpace(32);
+        const startY = y;
+        doc.setFillColor(29, 78, 216);
+        doc.roundedRect(14, y, 182, 8, 2, 2, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.setFontSize(11);
+        doc.setFont(undefined, 'bold');
+        doc.text(label, 18, y + 5.5);
+        doc.setTextColor(15, 23, 42);
+        y += 12;
+        writeBody();
+      };
+
+      Object.keys(groups).forEach(t => {
+        const items = groups[t];
+        // Keep whole category together when possible
+        const est = 12 + items.length * 28;
+        ensureSpace(Math.min(est, 80));
+        writeSection(typeLabel[t] || t, () => {
+          items.forEach(r => {
+            ensureSpace(24);
+            doc.setFont(undefined, 'bold');
+            doc.setFontSize(10);
+            const promptLines = doc.splitTextToSize(this.pdfSafeText(String(r.prompt || 'Question').slice(0, 400)), 178);
+            doc.text(promptLines, 16, y);
+            y += promptLines.length * 5 + 2;
+            doc.setFont(undefined, 'normal');
+            doc.setFontSize(8);
+            doc.setTextColor(100);
+            doc.text('Your response', 16, y); y += 4;
+            doc.setTextColor(15, 23, 42);
+            doc.setFontSize(9);
+            const respParts = this.pdfSafeText(String(r.response || '—').slice(0, 900)).split(/\n+/).filter(Boolean);
+            respParts.forEach(line => {
+              ensureSpace(8);
+              const lines = doc.splitTextToSize(line, 178);
+              doc.text(lines, 16, y);
+              y += lines.length * 4.5 + 1;
+            });
+            y += 2;
+            doc.setFontSize(8);
+            doc.setTextColor(100);
+            doc.text('Correct answer', 16, y); y += 4;
+            doc.setTextColor(22, 163, 74);
+            doc.setFontSize(9);
+            const corrParts = this.pdfSafeText(String(r.correct || '—').slice(0, 900)).split(/\n+/).filter(Boolean);
+            corrParts.forEach(line => {
+              ensureSpace(8);
+              const lines = doc.splitTextToSize(line, 178);
+              doc.text(lines, 16, y);
+              y += lines.length * 4.5 + 1;
+            });
+            y += 6;
+            doc.setTextColor(15, 23, 42);
+          });
+        });
+        y += 4;
+      });
+
+      // Special: Match
+      const matchRows = (rows || []).filter(r => (r.qType || r.q?.type) === 'match');
+      if (matchRows.length) {
+        ensureSpace(40);
+        writeSection('Match', () => {
+          matchRows.forEach(r => {
+            const q = r.q || {};
+            const left = q.left || [];
+            const right = q.right || [];
+            const val = (session.answers || {})[q.id] || {};
+            left.forEach((a, i) => {
+              ensureSpace(8);
+              const ri = val[i] != null ? val[i] : val[String(i)];
+              const b = ri != null ? right[Number(ri)] : '—';
+              doc.setFontSize(9);
+              doc.setTextColor(15, 23, 42);
+              doc.text(this.pdfSafeText((a || ('Item '+(i+1))) + '  ->  ' + (b != null ? b : '—')), 16, y);
+              y += 6;
+            });
+            y += 4;
+          });
+        });
+      }
+
+      // Special: Passage content + Qs
+      let passages = (exam?.sections || []).flatMap(s => (s.questions || []).filter(q => q.type === 'passage' || q.isPassageSet));
+      if (!passages.length && Array.isArray(session.questionsSnapshot)) {
+        passages = session.questionsSnapshot.filter(q => q && (q.type === 'passage' || q.isPassageSet));
+      }
+      if (passages.length) {
+        ensureSpace(40);
+        writeSection('Passage', () => {
+          passages.forEach(pq => {
+            const tabs = pq.passages || [{ html: pq.passageHtml || pq.html || '', title: 'Passage' }];
+            tabs.forEach((t, ti) => {
+              ensureSpace(16);
+              doc.setFont(undefined, 'bold');
+              doc.setFontSize(10);
+              doc.setTextColor(29, 78, 216);
+              doc.text(this.pdfSafeText(t.title || ('Passage ' + (ti + 1))), 16, y);
+              y += 6;
+              doc.setFont(undefined, 'normal');
+              doc.setTextColor(15, 23, 42);
+              doc.setFontSize(9);
+              const tmp = document.createElement('div');
+              tmp.innerHTML = t.html || pq.passageHtml || '';
+              const text = (tmp.innerText || tmp.textContent || '').trim() || '(No passage text)';
+              const lines = doc.splitTextToSize(this.pdfSafeText(text).slice(0, 2500), 178);
+              lines.forEach(line => {
+                ensureSpace(6);
+                doc.text(line, 16, y);
+                y += 4.5;
+              });
+              y += 4;
+            });
+            (pq.questions || []).forEach(kq => {
+              ensureSpace(20);
+              const answers = session.answers || {};
+              const resp = answers[kq.id] != null ? answers[kq.id] : (answers[pq.id] && answers[pq.id][kq.id]);
+              doc.setFont(undefined, 'bold');
+              doc.setFontSize(9);
+              doc.setTextColor(15, 23, 42);
+              const pl = doc.splitTextToSize(this.pdfSafeText(kq.prompt || 'Question'), 178);
+              doc.text(pl, 16, y); y += pl.length * 4.5 + 2;
+              doc.setFont(undefined, 'normal');
+              doc.setTextColor(100); doc.setFontSize(8);
+              doc.text('Your response', 16, y); y += 4;
+              doc.setTextColor(15, 23, 42); doc.setFontSize(9);
+              const rlines = doc.splitTextToSize(this.pdfSafeText(this.formatAnswerDisplay(kq, resp, false)), 178);
+              doc.text(rlines, 16, y); y += rlines.length * 4.5 + 2;
+              doc.setTextColor(100); doc.setFontSize(8);
+              doc.text('Correct answer', 16, y); y += 4;
+              doc.setTextColor(22, 163, 74); doc.setFontSize(9);
+              const clines = doc.splitTextToSize(this.pdfSafeText(this.formatAnswerDisplay(kq, null, true)), 178);
+              doc.text(clines, 16, y); y += clines.length * 4.5 + 6;
+              doc.setTextColor(15, 23, 42);
+            });
+          });
+        });
+      }
+
+      // Special: Table fill
+      const tableQs = [];
+      (exam?.sections || []).forEach(s => (s.questions || []).forEach(q => {
+        if (q.type === 'table' || q.type === 'tablefill') tableQs.push(q);
+      }));
+      if (!tableQs.length && Array.isArray(session.questionsSnapshot)) {
+        session.questionsSnapshot.forEach(q => {
+          if (q && (q.type === 'table' || q.type === 'tablefill')) tableQs.push(q);
+        });
+      }
+      if (tableQs.length) {
+        ensureSpace(40);
+        writeSection('Table fill', () => {
+          tableQs.forEach(q => {
+            ensureSpace(28);
+            doc.setFont(undefined, 'bold');
+            doc.setFontSize(10);
+            doc.setTextColor(15, 23, 42);
+            doc.text(this.pdfSafeText(q.prompt || 'Table'), 16, y); y += 7;
+            const cols = Number(q.cols) || (q.headers && q.headers.length) || 3;
+            const headers = q.headers || [];
+            const cells = q.cells || {};
+            const resp = (session.answers || {})[q.id] || {};
+            const colW = Math.min(178 / cols, 55);
+            const startX = 16;
+            // header row
+            doc.setFillColor(59, 130, 246);
+            doc.rect(startX, y - 4, colW * cols, 8, 'F');
+            doc.setTextColor(255, 255, 255);
+            doc.setFontSize(8);
+            for (let c = 0; c < cols; c++) {
+              doc.text(this.pdfSafeText(String(headers[c] || ('Col ' + (c+1)))).slice(0, 18), startX + c * colW + 1, y + 1);
+            }
+            y += 8;
+            doc.setTextColor(15, 23, 42);
+            const correctList = [];
+            let dataIdx = 0;
+            const rows = q.tableRows || [];
+            if (rows.length) {
+              rows.forEach(row => {
+                if (row && row.type === 'merged') {
+                  ensureSpace(10);
+                  doc.setFillColor(224, 242, 254);
+                  doc.rect(startX, y - 3, colW * cols, 8, 'F');
+                  doc.setFontSize(8);
+                  doc.text(this.pdfSafeText(row.label || '').slice(0, 80), startX + 2, y + 2);
+                  y += 9;
+                  return;
+                }
+                if (row && row.type === 'subheader') {
+                  ensureSpace(10);
+                  doc.setFillColor(147, 197, 253);
+                  doc.rect(startX, y - 3, colW * cols, 8, 'F');
+                  for (let c = 0; c < cols; c++) {
+                    const v = (row.values && row.values[c]) || '';
+                    doc.setFontSize(7);
+                    doc.text(this.pdfSafeText(String(v)).slice(0, 16), startX + c * colW + 1, y + 2);
+                  }
+                  y += 9;
+                  return;
+                }
+                ensureSpace(12);
+                const r = dataIdx++;
+                for (let c = 0; c < cols; c++) {
+                  const key = r + '-' + c;
+                  const cell = cells[key] || cells[r + '_' + c] || {};
+                  let txt = '';
+                  let fill = [255, 255, 255];
+                  if (cell.blank) {
+                    const stud = resp[key] != null ? String(resp[key]) : (resp[r + '_' + c] != null ? String(resp[r + '_' + c]) : '');
+                    const corr = Array.isArray(cell.correct) ? cell.correct[0] : (cell.correct || '');
+                    const ok = stud.trim().toLowerCase() === String(corr).trim().toLowerCase();
+                    const bn = correctList.length + 1;
+                    txt = '(' + bn + ') ' + (stud || '—');
+                    fill = ok ? [220, 252, 231] : [254, 226, 226];
+                    correctList.push({ n: bn, corr: String(corr || '—') });
+                  } else {
+                    txt = String(cell.value || (row.cells && row.cells[c]) || (row.values && row.values[c]) || '');
+                  }
+                  doc.setFillColor(...fill);
+                  doc.setDrawColor(148, 163, 184);
+                  doc.rect(startX + c * colW, y - 3, colW, 9, 'FD');
+                  doc.setFontSize(7);
+                  doc.setTextColor(15, 23, 42);
+                  doc.text(this.pdfSafeText(txt).slice(0, 20), startX + c * colW + 1, y + 2);
+                }
+                y += 10;
+              });
+            } else {
+              // fallback blanks only
+              Object.keys(cells).filter(k => cells[k] && cells[k].blank).forEach((k, idx2) => {
+                ensureSpace(8);
+                const stud = resp[k] != null ? String(resp[k]) : '—';
+                const corr = Array.isArray(cells[k].correct) ? cells[k].correct[0] : (cells[k].correct || '—');
+                doc.text(this.pdfSafeText('(' + (idx2 + 1) + ') ' + stud), 16, y);
+                correctList.push({ n: idx2 + 1, corr: String(corr) });
+                y += 5;
+              });
+            }
+            if (correctList.length) {
+              y += 3;
+              doc.setFont(undefined, 'bold');
+              doc.setFontSize(8);
+              doc.text('Correct answers:', 16, y); y += 5;
+              doc.setFont(undefined, 'normal');
+              correctList.forEach(x => {
+                ensureSpace(6);
+                doc.text('(' + x.n + ') ' + this.pdfSafeText(x.corr), 16, y);
+                y += 4.5;
+              });
+            }
+            y += 6;
+          });
+        });
+      }
+
+      doc.save(fname);
+      clearLoad();
+    } catch (e) {
+      console.error(e);
+      clearLoad();
+      try { await UI.alert('Could not generate PDF: ' + (e.message || e), 'Export'); } catch (_) {}
+    } finally {
+      clearLoad();
+      setTimeout(clearLoad, 200);
+      setTimeout(clearLoad, 1000);
+    }
+  },
+
+
+  async startMockFromSelection(type, subject) {
+    const boxes = [...document.querySelectorAll(`.mock-pick[data-type="${type}"][data-subject="${CSS.escape(subject)}"]:checked`)];
+    if (!boxes.length) {
+      await UI.alert('Select at least one assessment under this category.', 'Mock');
+      return;
+    }
+    const examIds = [...new Set(boxes.map(b => b.dataset.examid))];
+    let questions = [];
+    for (const id of examIds) {
+      const ex = await Exam.getExam(id);
+      if (type === 'regular' && ex?.questions) questions = questions.concat(ex.questions);
+      if (type === 'code') {
+        // code mock: show starter prompts as open practice notes
+        questions.push({
+          id: 'code_' + id,
+          type: 'open',
+          prompt: (ex?.title || 'Code practice') + ':\n' + (ex?.instructions || 'Practice coding from this assessment.'),
+          points: 1
+        });
+      }
+    }
+    questions = questions.sort(() => Math.random() - 0.5).slice(0, 20);
+    if (!questions.length) {
+      await UI.alert('No questions available from the selection.', 'Mock');
+      return;
+    }
+    // Save mock history
+    try {
+      await window.db.collection('mockHistory').add({
+        studentId: Auth.currentUser.uid,
+        subject, type,
+        questionCount: questions.length,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    } catch (_) {}
+
+    this.renderShell(`
+      <h2 class="page-title">Mock assessment — ${escapeHtml(subject)}</h2>
+      <p class="page-subtitle">Practice only (not graded). ${questions.length} questions.</p>
+      <div id="mock-area"></div>
+      <button class="btn btn-primary mt-2" id="mock-done">Finish</button>
+    `, 'mock');
+    const area = document.getElementById('mock-area');
+    area.innerHTML = questions.map(q => Regular.renderStudentQuestion(q, null)).join('');
+    Regular.bindStudentMC(area, () => {});
+    document.getElementById('mock-done').onclick = async () => {
+      await UI.alert('Mock finished (practice only).', 'Done');
+      this.showMockExam();
+    };
+  },
+
+
+  async showMockExam() {
+    this.renderShell(`
+      <h2 class="page-title">Mock History</h2>
+      <p class="page-subtitle">Past mock assessments you generated. Create new mocks from Assessment History.</p>
+      <div id="mock-hist">Loading...</div>
+    `, 'mock');
+    const el = document.getElementById('mock-hist');
+    try {
+      const snap = await window.db.collection('mockHistory')
+        .where('studentId', '==', Auth.currentUser.uid)
+        .get();
+      const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      list.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+      if (!list.length) {
+        el.innerHTML = '<p class="text-muted">No mock history yet. Go to Assessment History and click Generate mock assessment.</p>';
+        return;
+      }
+      el.innerHTML = list.map(m => `
+        <div class="card">
+          <strong>${escapeHtml(m.subject || 'General')}</strong>
+          <div class="text-muted">${escapeHtml(m.type || '')} · ${m.questionCount || 0} questions
+          · ${m.createdAt?.toDate ? m.createdAt.toDate().toLocaleString() : ''}</div>
+        </div>`).join('');
+    } catch (e) {
+      el.innerHTML = '<p class="text-muted">No mock history yet. Use Assessment History to generate mocks.</p>';
+    }
+  },
+
+
+  async testAsStudent(examId) {
+    // Always open preview in a new tab so instructor UI stays intact
+    const url = new URL(window.location.href);
+    url.searchParams.set('exam', examId);
+    url.searchParams.set('test', '1');
+    const w = window.open(url.toString(), '_blank', 'noopener');
+    if (!w) {
+      await UI.alert('Please allow pop-ups to open Test as student in a new tab.', 'Pop-up blocked');
+    }
+  },
+
+  async startStudentExam(examId, opts = {}) {
+    try { if (window.UI) { UI.hideLoading(); UI.close(); UI._clearInteractionLock(); } } catch (_) {}
+
+    try { if (window.UI) UI.showLoading('Joining assessment…'); } catch (_) {}
+    try {
+      const isTest = !!opts.testMode;
+      // Instructors / superadmins cannot take real assessments
+      if (!isTest && Auth.userProfile && (Auth.isInstructor() || Auth.userProfile.role === 'superadmin' || Auth.userProfile.role === 'teacher' || Auth.userProfile.role === 'proctor')) {
+        await UI.alert('You are registered as an instructor and cannot take assessments as a student. Use "Test as student" on the assessment card to preview.', 'Not allowed');
+        this.clearExamQuery();
+        return this.showInstructorHome ? this.showInstructorHome() : this.showStudentHome();
+      }
+      const exam = await Exam.getExam(examId);
+      if (!exam) { await UI.alert('Assessment not found.', 'Error'); return this.showStudentHome(); }
+      if (!isTest && exam.status === 'draft') {
+        await UI.alert('This assessment is not published yet. Please wait until your instructor publishes it.', 'Assessment not started');
+        return this.showStudentHome();
+      }
+      if (!isTest && exam.status && exam.status !== 'published' && exam.status !== 'active') {
+        await UI.alert('This assessment is not available yet. It has not been published or started.', 'Assessment not started');
+        return this.showStudentHome();
+      }
+      const { startAt, endAt } = Exam.getExamWindow(exam);
+      const now = Date.now();
+      if (!isTest && startAt && now < startAt) {
+        return this.showExamCountdown(exam, startAt);
+      }
+      if (!isTest && endAt && now > endAt) {
+        await UI.alert('This assessment has ended.', 'Closed');
+        return this.showStudentHome();
+      }
+      let session;
+      if (isTest) {
+        // Preview: always give a fresh duration from now (ignore past endAt)
+        const durMs = Math.max(5, Number(exam.durationMinutes) || 60) * 60000;
+        let examCopy = { ...exam, startAt: Date.now(), endAt: Date.now() + durMs };
+        try {
+          const wantRand = await UI.confirm(
+            'Randomize sections and questions like a published assessment for students?\n\nOK = randomize  ·  Cancel = original order',
+            'Test as student'
+          );
+          if (wantRand && typeof Regular !== 'undefined' && Regular.randomizeExam) {
+            examCopy = Regular.randomizeExam(examCopy);
+          } else if (wantRand) {
+            // Lightweight shuffle: sections then questions (skip passage/table blocks)
+            if (Array.isArray(examCopy.sections)) {
+              const secs = examCopy.sections.map(s => ({ ...s, questions: [...(s.questions || [])] }));
+              for (let i = secs.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [secs[i], secs[j]] = [secs[j], secs[i]];
+              }
+              secs.forEach(s => {
+                const locked = [];
+                const free = [];
+                (s.questions || []).forEach(q => {
+                  if (q && (q.type === 'passage' || q.type === 'table' || q.type === 'tablefill' || q.isPassageSet)) locked.push(q);
+                  else free.push(q);
+                });
+                for (let i = free.length - 1; i > 0; i--) {
+                  const j = Math.floor(Math.random() * (i + 1));
+                  [free[i], free[j]] = [free[j], free[i]];
+                }
+                s.questions = [...free, ...locked];
+              });
+              examCopy.sections = secs;
+            }
+          }
+        } catch (_) {}
+        session = {
+          id: 'test_' + Date.now(),
+          examId,
+          exam: examCopy,
+          code: exam.starterCode || '',
+          answers: {},
+          status: 'test',
+          endsAt: Date.now() + durMs,
+          startedAt: Date.now(),
+          studentEmail: Auth.userProfile.email,
+          studentName: (Auth.userProfile.name || '') + ' (Test)',
+          _testMode: true,
+          questionsSnapshot: (typeof Regular !== 'undefined' && Regular.flattenQuestions)
+            ? Regular.flattenQuestions(examCopy) : (examCopy.questions || [])
+        };
+      } else {
+        session = await Exam.joinExam(examId);
+      }
+      // Monitor gate handles fullscreen + capture
+      session._testMode = isTest;
+      window._testMode = isTest;
+      // CRITICAL: dismiss joining blur before gate so Accept is clickable
+      try { if (window.UI) UI.hideLoading(); } catch (_) {}
+      if (!isTest && !window._isMockExam) {
+        await Monitor.showEntryGate(session.id, exam.id || examId);
+      } else {
+        window._testMode = isTest;
+        if (window.Monitor) { Monitor.sessionId = session.id; Monitor.examId = exam.id; Monitor.started = true; Monitor.submitting = false; }
+      }
+      const et = exam.examType || session.examType ||
+        ((exam.questions && exam.questions.length) || (exam.sections && exam.sections.length) ? 'regular' : 'code');
+      try {
+        if (et === 'regular') {
+          return await this.startRegularExam(session);
+        }
+        return await this.startCodeExam(session);
+      } catch (inner) {
+        console.error('exam start', inner);
+        await UI.alert((inner && inner.message) || String(inner) || 'Could not open assessment.', 'Preview error');
+        this.clearExamQuery();
+        if (isTest) return this.showInstructorHome ? this.showInstructorHome() : this.showDashboard();
+        return this.showStudentHome();
+      }
+    } catch (err) {
+      try { if (window.UI) UI.hideLoading(); } catch (_) {}
+      this.clearExamQuery();
+      if (err.code === 'already-submitted') {
+        await UI.alert('You already submitted this assessment.', 'Already submitted');
+        return this.showStudentHistory();
+      }
+      await UI.alert(err.message || String(err), 'Error');
+      this.showStudentHome();
+    } finally {
+      try { if (window.UI) UI.hideLoading(); } catch (_) {}
+    }
+  },
+
+  showExamCountdown(exam, startAt) {
+    const examId = exam.id;
+    document.getElementById('app').innerHTML = `
+      <div class="countdown-screen">
+        <img src="assets/lvcc-logo.png" alt="" width="72" height="72" />
+        <h1>Your assessment is not started yet</h1>
+        <p class="countdown-sub">Subject: <strong>${escapeHtml(exam.subject || 'General')}</strong> — ${escapeHtml(exam.title || '')}</p>
+        <p class="text-muted">Starts at ${new Date(startAt).toLocaleString()}</p>
+        <div id="big-countdown" class="big-countdown">--:--:--</div>
+        <button class="btn btn-ghost mt-2" onclick="App.showStudentHome()">Back to home</button>
+      </div>`;
+    const tick = () => {
+      const remain = startAt - Date.now();
+      const el = document.getElementById('big-countdown');
+      if (!el) return;
+      if (remain <= 0) {
+        clearInterval(iv);
+        el.textContent = 'Starting…';
+        App.startStudentExam(examId);
+        return;
+      }
+      const s = Math.floor(remain / 1000);
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = s % 60;
+      el.textContent = [h, m, sec].map(n => String(n).padStart(2, '0')).join(':');
+    };
+    tick();
+    const iv = setInterval(tick, 250);
+  },
+
+  async startCodeExam(session) {
+    try { if (window.UI) { UI.hideLoading(); UI.close(); UI._clearInteractionLock(); } } catch (_) {}
+
+    const exam = session.exam;
+    const lang = exam.language || session.language || 'python';
+    document.getElementById('app').innerHTML = `
+      <div class="lock-banner hidden" id="lock-banner"></div>
+      <div id="timesup-overlay" class="timesup-overlay hidden">
+        <div class="timesup-box">
+          <h1>Time's up!</h1>
+          <p>Your work was submitted automatically.</p>
+          <div class="action-btns" style="justify-content:center;margin-top:1rem">
+            <button class="btn btn-primary" onclick="App.showStudentHistory()">View results</button>
+            <button class="btn btn-ghost" onclick="App.showStudentHome()">Back to home</button>
+          </div>
+        </div>
+      </div>
+      <header class="app-header exam-header-bar">
+        <div class="logo">
+          <img src="assets/lvcc-logo.png" alt="" class="header-logo" width="32" height="32" />
+          <span class="logo-text">Code Exam · ${escapeHtml(lang)}</span>
+        </div>
+        <div class="user-info">
+          <span id="exam-timer" class="exam-timer">--:--</span>
+          <button class="btn btn-sm btn-danger" id="submit-exam-btn">Submit</button>
+        </div>
+      </header>
+      <div class="exam-layout">
+        <aside class="exam-sidebar">
+          <h3>Instructions</h3>
+          <div class="exam-instructions" id="exam-instructions-text"></div>
+          <button class="btn btn-primary w-full mt-2" id="check-code-btn">Check Syntax</button>
+        </aside>
+        <div class="exam-editor-area">
+          <div class="editor-toolbar"><span class="text-muted">${escapeHtml(lang)} · Live sync</span></div>
+          <div id="monaco-container"></div>
+          <div class="output-panel"><div id="output-content"></div></div>
+        </div>
+      </div>`;
+    document.getElementById('exam-instructions-text').textContent = exam.instructions || '';
+    await CodeEditor.init('monaco-container', session.code || exam.starterCode || '', session.id, exam.id, lang);
+    // Monitor handles screen/heartbeat
+    // CodeEditor.startScreenShare(2500);
+    this._endedHandled = false;
+    this._watchInstructorEnd(session.id);
+    this.injectTestModeBar();
+    this.injectStudentChatFab(session.id);
+    document.getElementById('check-code-btn').onclick = () => CodeEditor.checkCode();
+    document.getElementById('submit-exam-btn').onclick = async () => {
+      if (!(await UI.confirm('Submit this assessment?', 'Submit'))) return;
+      CodeEditor.beginSubmit();
+      await Exam.submitSession(session.id, 'manual');
+      try { Monitor.stop(); } catch(_){}
+      CodeEditor.dispose();
+      document.getElementById('student-chat-fab')?.remove();
+      this.clearExamQuery();
+      await UI.alert('Submitted successfully.', 'Done');
+      this.showStudentHome();
+    };
+    this._runTimer(session);
+  },
+
+
+  _watchTeacherEnd(sessionId) { return this._watchInstructorEnd(sessionId); },
+
+  _watchInstructorEnd(sessionId) {
+    if (!sessionId || String(sessionId).startsWith('test_')) return;
+    if (this._sessionWatchUnsub) try { this._sessionWatchUnsub(); } catch (_) {}
+    this._lastInstructorReply = null;
+    this._lastInstructorChat = null;
+    this._sessionWatchUnsub = Exam.listenToSession(sessionId, async (s) => {
+      if (!s) return;
+      // Instructor ended
+      if (s.status === 'submitted' && (s.submitReason === 'teacher-ended' || s.submitReason === 'ended')) {
+        if (this._endedHandled) return;
+        this._endedHandled = true;
+        if (this._sessionWatchUnsub) { try { this._sessionWatchUnsub(); } catch (_) {} this._sessionWatchUnsub = null; }
+        try { CodeEditor.beginSubmit(); } catch (_) {}
+        try { if (window.Monitor) Monitor.stop(); } catch (_) {}
+        try { CodeEditor.dispose(); } catch (_) {}
+        document.getElementById('student-chat-fab')?.remove();
+        this.clearExamQuery();
+        this._showEndedOverlay();
+        return;
+      }
+      // Single path for instructor messages — key by chatPing so progression never re-shows
+      const msg = s.lastInstructorMessage || s.instructorReply;
+      const ping = s.chatPing || s.instructorReplyAt?.toMillis?.() || s.instructorReplyAt || null;
+      const key = ping != null ? String(ping) : (msg || '');
+      if (msg && key && key !== this._lastInstructorChatKey) {
+        this._lastInstructorChatKey = key;
+        this._lastInstructorChat = msg;
+        this._lastInstructorReply = s.instructorReply || msg;
+        await UI.alert(String(msg), 'Message from Instructor');
+      }
+    });
+  },
+
+  _showEndedOverlay() {
+    let ov = document.getElementById('timesup-overlay');
+    if (!ov) {
+      document.getElementById('app').innerHTML = `
+        <div id="timesup-overlay" class="timesup-overlay">
+          <div class="timesup-box">
+            <h1>Assessment Ended</h1>
+            <p>Your instructor ended this assessment.</p>
+            <div class="action-btns" style="justify-content:center;margin-top:1rem">
+              <button class="btn btn-primary" onclick="App.showStudentHistory()">View results</button>
+              <button class="btn btn-ghost" onclick="App.showStudentHome()">Back to home</button>
+            </div>
+          </div>
+        </div>`;
+      return;
+    }
+    ov.classList.remove('hidden');
+    const box = ov.querySelector('.timesup-box');
+    if (box) {
+      box.innerHTML = `<h1>Assessment Ended</h1>
+        <p>Your instructor ended this assessment.</p>
+        <div class="action-btns" style="justify-content:center;margin-top:1rem">
+          <button class="btn btn-primary" onclick="App.showStudentHistory()">View results</button>
+          <button class="btn btn-ghost" onclick="App.showStudentHome()">Back to home</button>
+        </div>`;
+    }
+  },
+
+  injectTestModeBar() {
+    if (!window._testMode) return;
+    document.getElementById('test-mode-bar')?.remove();
+    const bar = document.createElement('div');
+    bar.id = 'test-mode-bar';
+    bar.className = 'test-mode-bar';
+    bar.innerHTML = `<span>Test as student (preview)</span>
+      <button class="btn btn-sm btn-danger" id="test-end-btn">End / Close</button>`;
+    document.body.appendChild(bar);
+    document.getElementById('test-end-btn').onclick = () => {
+      try { try { Monitor.stop(); } catch(_){}
+      CodeEditor.dispose(); } catch (_) {}
+      document.getElementById('student-chat-fab')?.remove();
+      document.getElementById('test-mode-bar')?.remove();
+      window.close();
+      // if window.close blocked
+      this.clearExamQuery();
+      this.showInstructorHome ? this.showInstructorHome() : this.showStudentHome();
+    };
+  },
+
+  injectStudentChatFab(sessionId) {
+    if (!sessionId || String(sessionId).startsWith('test_')) return;
+    if (window._isMockExam) return;
+    document.getElementById('student-chat-fab')?.remove();
+    const fab = document.createElement('button');
+    fab.id = 'student-chat-fab';
+    fab.className = 'fab-msg';
+    fab.title = 'Talk to instructor';
+    fab.innerHTML = '💬';
+    fab.style.zIndex = '9500';
+    fab.style.pointerEvents = 'auto';
+    fab.onclick = async () => {
+      // Suppress integrity blur while messaging
+      if (window.Monitor) Monitor._uiBusy = true;
+      try {
+        const msg = await UI.prompt('Message your instructor:', '', 'Talk to instructor', 'Talk to instructor');
+        if (msg == null) return;
+        const text = String(msg).trim();
+        if (!text) {
+          await UI.alert('Please type a message.', 'Empty');
+          return;
+        }
+        await window.db.collection('sessions').doc(sessionId).update({
+          lastStudentMessage: text,
+          lastStudentMessageAt: firebase.firestore.FieldValue.serverTimestamp(),
+          chatPing: Date.now(),
+          studentChatAt: Date.now()
+        });
+        await UI.alert('Message sent to instructor.', 'Sent');
+      } catch (e) {
+        console.error(e);
+        await UI.alert(e.message || 'Could not send', 'Error');
+      } finally {
+        setTimeout(() => { if (window.Monitor) Monitor._uiBusy = false; }, 800);
+      }
+    };
+    document.body.appendChild(fab);
+  },
+
+
+  openSectionTestPreview(si) {
+    try {
+      const sections = window._builderSections || [];
+      const sec = sections[Number(si)];
+      if (!sec) {
+        UI.alert('Section not found.', 'Error');
+        return;
+      }
+      const qs = sec.questions || [];
+      if (!qs.length) {
+        UI.alert('This section has no questions yet.', 'Empty');
+        return;
+      }
+      document.getElementById('section-test-overlay')?.remove();
+      document.getElementById('test-mode-bar')?.remove();
+
+      const examMini = {
+        id: 'section_test',
+        title: (sec.title || 'Section') + ' (section test)',
+        subject: 'Preview',
+        durationMinutes: 30,
+        randomizeQuestions: false,
+        examType: 'regular',
+        sections: [JSON.parse(JSON.stringify(sec))],
+        questions: []
+      };
+      const session = {
+        id: 'test_sec_' + Date.now(),
+        examId: 'section_test',
+        exam: examMini,
+        answers: {},
+        startedAt: Date.now(),
+        _testMode: true,
+        status: 'active'
+      };
+      window._testMode = true;
+      window._sectionTestOverlay = true;
+
+      const ov = document.createElement('div');
+      ov.id = 'section-test-overlay';
+      ov.className = 'section-test-overlay';
+      ov.innerHTML = '<div class="section-test-panel" id="section-test-panel"><div class="section-test-inner" id="section-test-inner"></div></div>';
+      document.body.appendChild(ov);
+      ov.addEventListener('click', (e) => {
+        if (e.target === ov) this.closeSectionTestPreview();
+      });
+
+      const panelInner = document.getElementById('section-test-inner');
+      const origRender = this.renderShell.bind(this);
+      const origFinish = this.finishRegularTake.bind(this);
+      const origApp = document.getElementById('app');
+
+      // Redirect renderShell + direct #app writes into overlay
+      this.renderShell = (html) => {
+        if (panelInner) panelInner.innerHTML = html;
+      };
+      // startRegularExam writes to #app directly in places — patch getElementById for app during section test
+      const realGet = document.getElementById.bind(document);
+      document.getElementById = (id) => {
+        if (id === 'app' && window._sectionTestOverlay && panelInner) return panelInner;
+        return realGet(id);
+      };
+
+      this.finishRegularTake = async (sess, answers, reason) => {
+        try {
+          sess = sess || session;
+          sess.answers = answers || window._takeAnswers || {};
+          const st = this.computeAttemptStats(sess, examMini);
+          panelInner.innerHTML = `
+            <div class="card" style="max-width:720px;margin:2rem auto;padding:1.5rem">
+              <h2 style="margin-top:0">Section test result</h2>
+              <p class="text-muted">${escapeHtml(sec.title || 'Section')} — scoring preview (not saved)</p>
+              <div class="attempt-stats">
+                <div class="attempt-stat"><div class="val">${st.total}</div><div class="lbl">Total</div></div>
+                <div class="attempt-stat"><div class="val">${st.correct}</div><div class="lbl">Correct</div></div>
+                <div class="attempt-stat"><div class="val">${st.incorrect}</div><div class="lbl">Incorrect</div></div>
+                <div class="attempt-stat"><div class="val">${st.unattempted}</div><div class="lbl">Unattempted</div></div>
+                <div class="attempt-stat"><div class="val">${st.accuracy}%</div><div class="lbl">Accuracy</div></div>
+              </div>
+              <p style="margin-top:1rem">Score: <strong>${st.correct}</strong> / ${st.total}</p>
+              <div class="action-btns" style="margin-top:1.25rem">
+                <button class="btn btn-primary" id="sec-test-close">Close</button>
+              </div>
+            </div>`;
+          realGet('sec-test-close')?.addEventListener('click', () => this.closeSectionTestPreview());
+        } catch (e) {
+          console.error(e);
+          UI.alert(e.message || 'Section test failed', 'Error');
+        } finally {
+          this.renderShell = origRender;
+          this.finishRegularTake = origFinish;
+          document.getElementById = realGet;
+          window._testMode = false;
+        }
+      };
+
+      this.startRegularExam(session).catch((e) => {
+        console.error(e);
+        this.renderShell = origRender;
+        this.finishRegularTake = origFinish;
+        document.getElementById = realGet;
+        this.closeSectionTestPreview();
+        UI.alert(e.message || 'Could not start section test', 'Error');
+      });
+    } catch (e) {
+      console.error(e);
+      UI.alert(e.message || 'Could not open section test', 'Error');
+    }
+  },
+
+  closeSectionTestPreview() {
+    try {
+      if (window.Monitor) Monitor.stop();
+    } catch (_) {}
+    document.getElementById('section-test-overlay')?.remove();
+    document.getElementById('test-mode-bar')?.remove();
+    window._sectionTestOverlay = false;
+    window._testMode = false;
+  },
+
+  async startRegularExam(session) {
+    try { if (window.UI) { UI.hideLoading(); UI.close(); UI._clearInteractionLock(); } } catch (_) {}
+
+    try { if (window.UI) UI.hideLoading(); } catch (_) {}
+    const isTestSession = !!(session._testMode || window._testMode || String(session.id || '').startsWith('test_'));
+    // Resume vs lock: intentional leave requires instructor Admit (not for Test as student)
+    
+    // Allow return via assessment code unless instructor force-ended the attempt
+    if (!isTestSession && (session.status === 'submitted' || session.status === 'ended')) {
+      const endedByTeacher = session.submitReason === 'teacher-ended' || session.teacherEnded === true;
+      if (endedByTeacher) {
+        await UI.alert('This assessment was ended by your instructor. You cannot re-enter.', 'Assessment closed');
+        return this.showStudentHome();
+      }
+      if (session.allowContinue || session.instructorAdmitted) {
+        await window.db.collection('sessions').doc(session.id).update({
+          status: 'active',
+          monitoringStopped: false,
+          reenteredAt: firebase.firestore.FieldValue.serverTimestamp()
+        }).catch(() => {});
+        session.status = 'active';
+      } else {
+        const go = await UI.confirm(
+          'You already submitted or left this assessment. Request to continue with your saved progress?',
+          'Return to assessment'
+        );
+        if (!go) return this.showStudentHome();
+        await window.db.collection('sessions').doc(session.id).update({
+          lockedUntilAdmit: true,
+          awaitingAdmit: true,
+          lockRequestMessage: 'Student requests to return to assessment with saved progress.',
+          lastStudentMessage: 'Request to continue assessment',
+          chatPing: Date.now()
+        }).catch(() => {});
+        await UI.alert('Request sent. Wait for your instructor to Admit / Continue you.', 'Request sent');
+        return this.showStudentHome();
+      }
+    }
+
+if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
+      const msg = await UI.prompt(
+        'Your assessment is locked because you left the page. Send a message to your instructor to request access:',
+        '',
+        'Assessment locked',
+        'Message to instructor…'
+      );
+      if (msg && String(msg).trim() && !String(session.id).startsWith('test_')) {
+        await window.db.collection('sessions').doc(session.id).update({
+          lockRequestMessage: String(msg).trim(),
+          lockRequestAt: firebase.firestore.FieldValue.serverTimestamp(),
+          chatPing: Date.now(),
+          lastStudentMessage: String(msg).trim(),
+          awaitingAdmit: true
+        }).catch(() => {});
+        await UI.alert('Message sent. Wait for your instructor to Admit you back into the assessment.', 'Sent');
+      }
+      return this.showStudentHome();
+    }
+    try {
+      const leaveRaw = !isTestSession && sessionStorage.getItem('lvcc_leave_' + session.id);
+      if (leaveRaw && !session.instructorAdmitted && !session.lockedUntilAdmit) {
+        const leave = JSON.parse(leaveRaw);
+        if (leave.intentionalLeave) {
+          await window.db.collection('sessions').doc(session.id).update({
+            lockedUntilAdmit: true,
+            leaveAt: leave.at || Date.now()
+          }).catch(() => {});
+          session.lockedUntilAdmit = true;
+        }
+      }
+    } catch (_) {}
+    if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
+      const msg = await UI.prompt(
+        'Your assessment is locked because you left the page. Message your instructor to continue:',
+        '',
+        'Assessment locked',
+        'Message to instructor…'
+      );
+      if (msg && String(msg).trim()) {
+        await window.db.collection('sessions').doc(session.id).update({
+          lockRequestMessage: String(msg).trim(),
+          lockRequestAt: firebase.firestore.FieldValue.serverTimestamp(),
+          chatPing: Date.now(),
+          lastStudentMessage: String(msg).trim(),
+          awaitingAdmit: true
+        }).catch(() => {});
+        await UI.alert('Message sent. Wait for your instructor to Admit you.', 'Sent');
+      }
+      return this.showStudentHome();
+    }
+    try { sessionStorage.removeItem('lvcc_leave_' + session.id); } catch (_) {}
+
+    const exam = session.exam || await Exam.getExam(session.examId);
+    let groups = (typeof Regular.groupQuestionsForTake === 'function')
+      ? Regular.groupQuestionsForTake(exam)
+      : (Regular.flattenQuestions(exam) || []).map(q => ({ kind: 'single', question: q }));
+    // Per-student section-aware randomization (passage & table locked)
+    if (exam.randomizeQuestions) {
+      try {
+        const shuffle = (arr) => {
+          const a = [...arr];
+          for (let i = a.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [a[i], a[j]] = [a[j], a[i]];
+          }
+          return a;
+        };
+        (exam.sections || []).forEach(s => {
+          (s.questions || []).forEach(q => {
+            if (q && q.type === 'categorize' && Array.isArray(q.items)) q.items = shuffle(q.items);
+          });
+        });
+        (exam.questions || []).forEach(q => {
+          if (q && q.type === 'categorize' && Array.isArray(q.items)) q.items = shuffle(q.items);
+        });
+      } catch (_) {}
+      const shuffle = (arr) => {
+        const a = arr.slice();
+        for (let i = a.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [a[i], a[j]] = [a[j], a[i]];
+        }
+        return a;
+      };
+      // groups may already be section-ordered; shuffle only movable singles within contiguous section blocks
+      // Prefer sections from exam
+      if (exam.sections && exam.sections.length) {
+        const out = [];
+        // Shuffle section order first
+        const sectionList = shuffle(exam.sections.slice());
+        for (const sec of sectionList) {
+          const qs = (sec.questions || []).slice();
+          const fixed = [];
+          const movable = [];
+          qs.forEach((q, qi) => {
+            if (!q) return;
+            if (q.type === 'passage' || q.type === 'table' || q.isPassageSet) fixed.push({ q, qi, lock: true });
+            else movable.push({ q, qi, lock: false });
+          });
+          const shuffled = shuffle(movable);
+          let mi = 0;
+          const ordered = qs.map((q) => {
+            if (!q) return null;
+            if (q.type === 'passage' || q.type === 'table' || q.isPassageSet) return q;
+            return shuffled[mi++]?.q || q;
+          }).filter(Boolean);
+          ordered.forEach(q => {
+            const meta = {
+              sectionTitle: sec.title || '',
+              sectionInstructions: sec.instructions || '',
+              sectionId: sec.id || ''
+            };
+            if (q.type === 'passage' || q.isPassageSet) {
+              out.push({ kind: 'passage', passage: q, questions: q.questions || [], ...meta });
+            } else {
+              out.push({ kind: 'single', question: q, ...meta });
+            }
+          });
+        }
+        // Rebuild with tableSet batching after section shuffle
+        try {
+          groups = Regular.groupQuestionsForTake({ ...exam, sections: sectionList.map(sec => {
+            // sectionList already has shuffled questions per sec from ordered rebuild
+            const qs = [];
+            // recover from out for this sec
+            return sec;
+          })});
+        } catch (_) {}
+        if (out.length) {
+          // Convert consecutive table singles in out into tableSet
+          const merged = [];
+          let tbuf = [];
+          const flush = (meta) => {
+            if (!tbuf.length) return;
+            if (tbuf.length === 1) merged.push(tbuf[0]);
+            else merged.push({ kind: 'tableSet', questions: tbuf.map(x => x.question), sectionTitle: meta.sectionTitle, sectionInstructions: meta.sectionInstructions, sectionId: meta.sectionId });
+            tbuf = [];
+          };
+          out.forEach(g => {
+            if (g.kind === 'single' && g.question && (g.question.type === 'table' || g.question.type === 'tablefill')) {
+              tbuf.push(g);
+            } else {
+              flush(tbuf[0] || g);
+              merged.push(g);
+            }
+          });
+          flush(out[out.length - 1] || {});
+          groups = merged;
+        }
+      } else {
+        // no sections: shuffle only non-passage/table among singles
+        const locked = [];
+        const free = [];
+        groups.forEach((g, i) => {
+          if (g.kind === 'passage' || g.kind === 'tableSet' || (g.question && (g.question.type === 'table' || g.question.type === 'tablefill' || g.question.type === 'passage'))) {
+            locked.push({ g, i });
+          } else free.push(g);
+        });
+        const shuffled = shuffle(free);
+        let fi = 0;
+        groups = groups.map((g) => {
+          if (g.kind === 'passage' || g.kind === 'tableSet' || (g.question && (g.question.type === 'table' || g.question.type === 'tablefill' || g.question.type === 'passage'))) return g;
+          return shuffled[fi++] || g;
+        });
+      }
+    }
+    if (!groups.length) {
+      await UI.alert('This assessment has no questions yet.', 'Empty');
+      return isTestSession ? (this.showInstructorHome ? this.showInstructorHome() : this.showDashboard()) : this.showStudentHome();
+    }
+
+    let gi = 0;
+    try {
+      const savedGi = sessionStorage.getItem('lvcc_progress_' + session.id);
+      if (savedGi != null && !isNaN(Number(savedGi))) {
+        const n = Number(savedGi);
+        if (n >= 0 && n < groups.length) gi = n;
+      }
+    } catch (_) {}
+
+    let pi = 0;
+    const answers = { ...(session.answers || {}) };
+    window._takeAnswers = answers;
+    window._passageTab = 0;
+    window._seenSectionIntro = null;
+    window._pendingSectionIntro = null;
+
+    const isAnswered = (qid, qRef) => {
+      if (!qid) return true;
+      if (!Object.prototype.hasOwnProperty.call(answers, qid)) return false;
+      const v = answers[qid];
+      if (v === null) return true;
+      if (v === undefined || v === '') return false;
+      if (typeof v === 'number') return true;
+      if (typeof v === 'boolean') return true;
+      if (Array.isArray(v)) return v.length > 0;
+      const q = qRef || null;
+      // Strict: all blanks / items / pairs must be filled for these types
+      if (q && (q.type === 'fill' || q.type === 'wordbox')) {
+        let need = 0;
+        if (Array.isArray(q.blanks) && q.blanks.length) need = q.blanks.length;
+        else if (Array.isArray(q.parts)) need = q.parts.filter(p => p && p.kind === 'blank').length;
+        else if (Array.isArray(q.questions)) {
+          need = q.questions.reduce((n, kq) => {
+            const s = kq.sentence || '';
+            const m = s.match(/\{([^{}]+)\}/g) || s.match(/\{\{\d+\}\}/g) || [];
+            return n + (m.length || (kq.blanks || []).length);
+          }, 0);
+        }
+        if (need > 0 && typeof v === 'object' && !Array.isArray(v)) {
+          const filled = Object.values(v).filter(x => x != null && String(x).trim() !== '').length;
+          // wordbox kids may nest
+          if (q.type === 'wordbox' && Array.isArray(q.questions) && q.questions.length) {
+            return q.questions.every(kq => {
+              const kv = v[kq.id];
+              if (kv && typeof kv === 'object') {
+                const bn = (kq.blanks || []).length || ((kq.sentence || '').match(/\{([^{}]+)\}/g) || []).length;
+                if (!bn) return Object.values(kv).some(x => x != null && String(x).trim());
+                return Object.values(kv).filter(x => x != null && String(x).trim()).length >= bn;
+              }
+              return isAnswered(kq.id);
+            });
+          }
+          return filled >= need;
+        }
+      }
+      if (q && q.type === 'table') {
+        const cells = q.cells || {};
+        const blanks = Object.keys(cells).filter(k => cells[k] && cells[k].blank);
+        if (blanks.length && typeof v === 'object') {
+          return blanks.every(k => v[k] != null && String(v[k]).trim() !== '');
+        }
+      }
+      if (q && q.type === 'categorize') {
+        const items = q.items || [];
+        if (items.length && typeof v === 'object') {
+          return items.every(it => {
+            const id = it.id;
+            return v[id] != null && String(v[id]).trim() !== '';
+          });
+        }
+      }
+      if (q && q.type === 'match') {
+        const left = q.left || [];
+        if (left.length && typeof v === 'object') {
+          return left.every((_, i) => v[i] != null || v[String(i)] != null);
+        }
+      }
+      if (typeof v === 'object') {
+        return Object.values(v).some(x => x != null && String(x).trim() !== '');
+      }
+      return String(v).trim() !== '';
+    };
+    const allAnswered = () => {
+      for (const g of groups) {
+        if (g.kind === 'passage') {
+          const list = g.questions || [];
+          if (list.some(q => q && !isAnswered(q.id, q))) return false;
+        } else if (g.question && !isAnswered(g.question.id, g.question)) return false;
+      }
+      return true;
+    };
+    const findNextUnanswered = (fromGi, fromPi) => {
+      for (let i = fromGi; i < groups.length; i++) {
+        const g = groups[i];
+        if (g.kind === 'passage') {
+          const list = g.questions || [];
+          const startP = (i === fromGi) ? Math.max(0, (fromPi == null ? -1 : fromPi) + 1) : 0;
+          for (let p = startP; p < list.length; p++) {
+            if (list[p] && !isAnswered(list[p].id, list[p])) return { gi: i, pi: p };
+          }
+        } else if (g.question && !isAnswered(g.question.id, g.question)) {
+          if (i > fromGi || fromPi < 0) return { gi: i, pi: 0 };
+        }
+      }
+      return null;
+    };
+
+    const colors = (window.OPTION_COLORS || ['#3b82f6','#14b8a6','#eab308','#f43f5e','#8b5cf6','#06b6d4','#f97316','#84cc16']);
+    const renderMcOptions = (q, withBanner) => {
+      const isTf = q.type === 'truefalse' || q.type === 'modified_tf';
+      const multi = isTf ? false : q.multiCorrect === true;
+      const opts = isTf ? ['True', 'False'] : (q.options || []);
+      const raw = answers[q.id];
+      const val = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw.choice : raw;
+      const cards = opts.map((o, i) => {
+        let color = colors[i % colors.length];
+        if (isTf && i === 1) color = '#f43f5e'; // False = same pink as MC option 4
+        const selected = multi
+          ? (Array.isArray(val) && (val.includes(i) || val.includes(String(i))))
+          : (val == i || val === String(i));
+        const cls = 'take-opt gq-option' + (selected ? ' selected' : '') + (isTf && i === 1 ? ' gq-false-opt' : '');
+        return `<button type="button" class="${cls}" style="background:${color} !important" data-opt="${i}" data-multi="${multi ? '1' : '0'}">${escapeHtml((o && String(o).trim()) ? o : ('Option ' + (i + 1)))}</button>`;
+      }).join('');
+      const head = withBanner
+        ? `<div class="take-q-banner">${escapeHtml(q.prompt || q.statement || 'Question').replace(/\n/g, '<br>')}</div>`
+        : `<div class="gq-question-box"><div class="gq-question-text">${escapeHtml(q.prompt || 'Question').replace(/\n/g, '<br>')}</div></div>`;
+      return `${head}<div class="take-options-grid" data-qid="${q.id}">${cards}</div>`;
+    };
+
+    const renderTake = () => {
+      window._tableFillActive = false;
+      if (window._overviewJumpGi != null) {
+        gi = window._overviewJumpGi;
+        window._overviewJumpGi = null;
+        pi = 0;
+      }
+      if (gi >= groups.length) {
+        const next = findNextUnanswered(0, -1);
+        if (next) { gi = next.gi; pi = next.pi; }
+        else {
+          this.showAnswerOverview(session, answers, groups, renderTake);
+          return;
+        }
+      }
+      const g = groups[gi];
+      const progress = Math.round((gi / Math.max(groups.length, 1)) * 100);
+      let body = '';
+      let currentQ = null;
+
+      // Section instruction interstitial (once per section when instructions exist)
+      const secKey = (g.sectionId || g.sectionTitle || '') + '::' + (g.sectionInstructions || '');
+      const showSecIntro = !!(g.sectionInstructions && String(g.sectionInstructions).trim())
+        && window._seenSectionIntro !== secKey
+        && (gi === 0 || (groups[gi - 1] && (groups[gi - 1].sectionId || groups[gi - 1].sectionTitle) !== (g.sectionId || g.sectionTitle)));
+      if (showSecIntro) {
+        window._pendingSectionIntro = secKey;
+        document.getElementById('app').innerHTML = `
+          <div class="exam-take-wrap take-fullscreen section-intro-page">
+            <div class="take-topbar">
+              <div class="take-progress"><div class="take-progress-bar" style="width:${progress}%"></div></div>
+              <div class="take-topbar-meta">
+                <span class="take-count">Section</span>
+                <button type="button" class="theme-toggle-icon theme-exam-btn" data-theme-toggle onclick="Theme.cycleExamTheme()">${(typeof Theme!=='undefined'?Theme.icon():'🌙')}</button>
+              </div>
+            </div>
+            <div class="section-intro-stage">
+              <div class="section-intro-frame">
+                <div class="section-intro-inner">
+                  <div class="section-intro-title">${escapeHtml(g.sectionTitle || 'Section')}</div>
+                  <div class="section-intro-body">${escapeHtml(g.sectionInstructions).replace(/\n/g, '<br>')}</div>
+                </div>
+              </div>
+            </div>
+            <div class="section-intro-footer">
+              <button type="button" class="btn btn-primary section-intro-go" id="section-intro-continue">Ready</button>
+            </div>
+          </div>`;
+        this._timerPaused = true;
+        document.getElementById('section-intro-continue').onclick = () => {
+          this._timerPaused = false;
+          window._seenSectionIntro = window._pendingSectionIntro;
+          renderTake();
+        };
+        if (typeof Theme !== 'undefined') Theme.syncButtons();
+        return;
+      }
+
+      if (g.kind === 'passage') {
+        const list = g.questions && g.questions.length ? g.questions : [];
+        const tabs = (g.passage && g.passage.passages && g.passage.passages.length)
+          ? g.passage.passages
+          : [{ title: 'Passage 1', html: (g.passage && (g.passage.passageHtml || g.passage.prompt)) || '' }];
+        const activeTab = window._passageTab || 0;
+        const tabBar = tabs.map((pp, i) =>
+          `<button type="button" class="passage-tab ${i === activeTab ? 'active' : ''}" data-pass-tab="${i}">${escapeHtml(pp.title || ('Passage ' + (i + 1)))}</button>`
+        ).join('');
+        const activeHtml = (tabs[activeTab] && tabs[activeTab].html) || '';
+        const kidsHtml = list.map((kq) => {
+          if (kq.type === 'multiple' || kq.type === 'truefalse' || kq.type === 'modified_tf') {
+            return `<div class="pass-take-q" data-qid="${kq.id}">${renderMcOptions(kq, false)}</div>`;
+          }
+          return `<div class="pass-take-q">${Regular.renderStudentQuestion(kq, answers[kq.id])}</div>`;
+        }).join('') || '<p class="text-muted">No questions for this passage</p>';
+        body = `<div class="take-passage passage-take-dual vh-lock-inner" id="take-q-box" data-passage-take="1">
+          <div class="take-passage-left passage-take-left">
+            <div class="passage-tab-bar">${tabBar}</div>
+            <div class="passage-doc-scroll"><div class="passage-doc">${activeHtml}</div></div>
+          </div>
+          <div class="take-passage-right passage-take-right">
+            <div class="pass-q-list">${kidsHtml}</div>
+          </div>
+        </div>`;
+      } else if (g.kind === 'tableSet' && Array.isArray(g.questions) && g.questions.length) {
+        currentQ = g.questions[0];
+        const anyCalc = g.questions.some(tq => tq && tq.showCalculator !== false);
+        const blocks = g.questions.map((tq, ti) => {
+          const html = Regular.renderStudentTable(tq, answers[tq.id], { noCalc: true, tableOnly: true });
+          return `<div class="table-set-item" data-table-qi="${ti}" data-qid="${tq.id}">${html}</div>`;
+        }).join('');
+        const calcSide = anyCalc ? Regular.renderSharedCalculator() : '';
+        window._tableFillActive = true;
+        body = `<div class="take-table-set-layout ${anyCalc ? '' : 'tf-full-width'}" id="take-q-box" data-table-fill="1">
+          <div class="take-table-set-left">
+            <div class="take-table-set-scroll">${blocks}</div>
+          </div>
+          ${calcSide}
+        </div>`;
+      } else {
+        currentQ = g.question;
+        if (!currentQ) {
+          body = '<p class="text-muted">Missing question</p>';
+        } else if (currentQ.type === 'multiple' || currentQ.type === 'truefalse' || currentQ.type === 'modified_tf') {
+          body = `<div id="take-q-box">${renderMcOptions(currentQ, true)}</div>`;
+        } else if (currentQ.type === 'completecode' || currentQ.type === 'dragdrop') {
+          body = `<div class="take-q-stack" style="width:100%" id="take-q-box">${Regular.renderStudentCompleteCode(currentQ, answers[currentQ.id])}</div>`;
+        } else if (currentQ.type === 'wordbox') {
+          body = `<div class="take-q-stack" style="width:100%" id="take-q-box">${Regular.renderStudentWordBox(currentQ, answers[currentQ.id])}</div>`;
+        } else if (currentQ.type === 'fill') {
+          body = `<div class="take-q-stack" style="width:100%" id="take-q-box">${Regular.renderStudentFill(currentQ, answers[currentQ.id])}</div>`;
+        } else if (currentQ.type === 'categorize') {
+          body = `<div class="take-q-stack" style="width:100%" id="take-q-box">${Regular.renderStudentCategorize(currentQ, answers[currentQ.id])}</div>`;
+        } else if (currentQ.type === 'table') {
+          body = `<div class="take-q-stack" style="width:100%" id="take-q-box">${Regular.renderStudentTable(currentQ, answers[currentQ.id])}</div>`;
+        } else if (currentQ.type === 'match') {
+          body = `<div class="take-q-stack" style="width:100%" id="take-q-box">${Regular.renderStudentMatch(currentQ, answers[currentQ.id])}</div>`;
+        } else {
+          body = `<div class="take-q-banner">${escapeHtml(currentQ.prompt || 'Question')}</div>
+            <div class="take-single" id="take-q-box">${Regular.renderStudentQuestion(currentQ, answers[currentQ.id])}</div>`;
+        }
+      }
+
+      const showSkip = !allAnswered();
+      document.getElementById('app').innerHTML = `
+        <div class="exam-take-wrap take-fullscreen">
+          <div class="take-topbar">
+            <div class="take-progress"><div class="take-progress-bar" style="width:${progress}%"></div></div>
+            <div class="take-topbar-meta">
+              ${!(session.isMock || window._isMockExam) ? '<span class="monitor-live-cue" title="Screen monitoring"><span class="monitor-dot"></span> Screen Monitoring Enabled</span>' : ''}
+              <!-- progress count removed (redundant) -->
+              <span id="exam-timer" class="timer-badge">--:--</span>
+              <button type="button" class="theme-toggle-icon theme-exam-btn" data-theme-toggle onclick="Theme.cycleExamTheme()" aria-label="Theme" title="Theme: Light / Dark / Retro">${(typeof Theme !== 'undefined' ? Theme.icon() : '🌙')}</button>
+              <button type="button" class="btn btn-sm btn-danger" id="take-end-btn">End assessment</button>
+            </div>
+          </div>
+          <div class="take-stage">${body}</div>
+          <div class="take-nav">
+            <button type="button" class="btn btn-primary" id="take-next" class="btn btn-primary take-submit-btn">${(!showSkip) ? 'Submit' : 'Submit Answer'}</button>
+          </div>
+        </div>`;
+
+      const box = document.getElementById('take-q-box');
+      const save = () => {
+        const root = document.querySelector('.take-stage') || box;
+        try {
+          if (root && Regular.collectAnswers) Object.assign(answers, Regular.collectAnswers(root));
+        } catch (_) {}
+        document.querySelectorAll('.take-options-grid[data-qid]').forEach(grid => {
+          const qid = grid.getAttribute('data-qid');
+          if (!qid) return;
+          const multi = grid.querySelector('.take-opt')?.getAttribute('data-multi') === '1';
+          const selected = [...grid.querySelectorAll('.take-opt.selected')].map(b => Number(b.dataset.opt));
+          if (multi) answers[qid] = selected;
+          else if (selected.length) answers[qid] = selected[0];
+        });
+        window._takeAnswers = answers;
+        if (!String(session.id).startsWith('test_')) {
+          Exam.updateSessionAnswers(session.id, answers).catch(() => {});
+        }
+      };
+
+      document.querySelectorAll('.take-options-grid').forEach(grid => {
+        grid.querySelectorAll('.take-opt').forEach(btn => {
+          btn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const multi = btn.getAttribute('data-multi') === '1';
+            if (!multi) {
+              grid.querySelectorAll('.take-opt').forEach(b => b.classList.remove('selected'));
+              btn.classList.add('selected');
+            } else {
+              btn.classList.toggle('selected');
+            }
+            save();
+          };
+        });
+      });
+
+      if (box) {
+        try { Regular.bindStudentMC(box, save); } catch (e) { console.warn(e); }
+        try {
+          const passList = document.querySelector('.pass-q-list') || document.querySelector('.passage-take-right');
+          if (passList) {
+            passList.querySelectorAll('input, textarea').forEach(el => {
+              el.addEventListener('change', save);
+              el.addEventListener('input', save);
+            });
+          }
+        } catch (e) { console.warn(e); }
+        // Word box drag / tap-to-place
+        try {
+          const wbRoot = box.matches?.('.wb-student') ? box : (box.querySelector('.wb-student') || document.querySelector('.wb-student'));
+          if (wbRoot && typeof Regular.bindWordBoxDrag === 'function') {
+            Regular.bindWordBoxDrag(wbRoot, save);
+          }
+          // Also bind drops in dual right panel
+          document.querySelectorAll('.wb-dual .wb-inline-drop').forEach(() => {});
+        } catch (e) { console.warn(e); }
+        // Categorize drag / tap-to-place
+        try {
+          const catRoot = box.matches?.('.cat-student') ? box : box.querySelector('.cat-student');
+          if (catRoot && typeof Regular.bindCategorizeDrag === 'function') {
+            Regular.bindCategorizeDrag(catRoot, save);
+          }
+        } catch (e) { console.warn(e); }
+        try {
+          const tfRoot = box.matches?.('.table-fill-take') || box.matches?.('.take-table-set-layout')
+            ? box
+            : (box.querySelector?.('.table-fill-take') || box.querySelector?.('.take-table-set-layout') || document.querySelector('.table-fill-take') || document.querySelector('.take-table-set-layout') || document.getElementById('take-q-box'));
+          if (tfRoot && typeof Regular.bindStudentTableCalc === 'function') {
+            Regular.bindStudentTableCalc(tfRoot);
+          }
+        } catch (e) { console.warn(e); }
+        const mt = box.getAttribute('data-type') === 'match' ? box : box.querySelector('[data-type="match"]');
+        try { if (Regular.bindTableCalcToggle) Regular.bindTableCalcToggle(document); } catch (_) {}
+        if (mt && Regular.bindMatchTake) {
+          Regular.bindMatchTake(mt, (pairs) => {
+            answers[mt.getAttribute('data-qid')] = pairs;
+            window._takeAnswers = answers;
+            save();
+          });
+        }
+        box.querySelectorAll('input, textarea, select').forEach(el => {
+          el.addEventListener('change', save);
+          el.addEventListener('input', save);
+        });
+        document.querySelectorAll('.pass-q-list input, .pass-q-list textarea').forEach(el => {
+          el.addEventListener('change', save);
+          el.addEventListener('input', save);
+        });
+      }
+
+      const goNext = async (skipPassage = false, isSkip = false) => {
+        save();
+        if (isSkip && !skipPassage) {
+          // Always move to the NEXT group (never stay on the same question)
+          if (g.kind === 'passage') {
+            (g.questions || []).forEach(q => {
+              if (q && answers[q.id] === undefined) answers[q.id] = null;
+            });
+          } else if (g.kind === 'tableSet') {
+            (g.questions || []).forEach(q => {
+              if (q && answers[q.id] === undefined) answers[q.id] = null;
+            });
+          } else if (g.question && answers[g.question.id] === undefined) {
+            answers[g.question.id] = null;
+          }
+          window._takeAnswers = answers;
+          gi += 1;
+          pi = 0;
+          window._passageTab = 0;
+          if (gi >= groups.length) {
+            // wrap to first still-unanswered, else last group
+            const n = findNextUnanswered(0, -1);
+            if (n) { gi = n.gi; pi = n.pi; }
+            else { gi = Math.max(0, groups.length - 1); }
+          }
+          renderTake();
+          return;
+        }
+        if (skipPassage && g.kind === 'passage') {
+          gi += 1; pi = 0; window._passageTab = 0;
+          if (gi >= groups.length) {
+            const n = findNextUnanswered(0, -1);
+            if (n) { gi = n.gi; pi = n.pi; renderTake(); return; }
+            const ok = await UI.confirm('Submit this assessment? You will not be able to change answers after submitting.', 'Submit assessment');
+            if (!ok) return;
+            await this.finishRegularTake(session, answers, 'manual');
+          } else renderTake();
+          return;
+        }
+        if (g.kind === 'passage') {
+          const list = g.questions || [];
+          if (list.find(q => q && !isAnswered(q.id, q))) {
+            await UI.alert('All questions in this passage should be answered before continuing.', 'Answer required');
+            return;
+          }
+        } else if (g.kind === 'tableSet') {
+          const list = g.questions || [];
+          if (list.find(q => q && !isAnswered(q.id, q))) {
+            await UI.alert('Please complete all tables on this page before continuing.', 'Answer required');
+            return;
+          }
+        } else if (g.question) {
+          const q = g.question;
+          // Force-read current question from DOM (covers MC 0-index, fill, match, wordbox kids)
+          const grid = document.querySelector('.take-options-grid[data-qid="' + q.id + '"]');
+          if (grid) {
+            const multi = grid.querySelector('.take-opt')?.getAttribute('data-multi') === '1';
+            const selected = [...grid.querySelectorAll('.take-opt.selected')].map(b => Number(b.dataset.opt));
+            if (multi && selected.length) answers[q.id] = selected;
+            else if (selected.length) answers[q.id] = selected[0];
+          }
+          const stage = document.querySelector('.take-stage');
+          if (stage && Regular.collectAnswers) {
+            try { Object.assign(answers, Regular.collectAnswers(stage)); } catch (_) {}
+          }
+          // Wordbox with child questions: parent answered if any child blank filled
+          let ok = isAnswered(q.id, q);
+          if (!ok && q.type === 'wordbox' && Array.isArray(q.questions) && q.questions.length) {
+            ok = isAnswered(q.id, q);
+            if (ok) answers[q.id] = answers[q.id] || { _kids: true };
+          }
+          if (!ok && q.type === 'match') {
+            const pairs = answers[q.id];
+            ok = pairs && typeof pairs === 'object' && Object.keys(pairs).length > 0;
+          }
+          if (!ok) {
+            await UI.alert('All blanks/questions should be answered/filled before continuing.', 'Answer required');
+            return;
+          }
+          window._takeAnswers = answers;
+        }
+        if (!showSkip) {
+          const ok = await UI.confirm('Submit this assessment? You will not be able to change answers after submitting.', 'Submit assessment');
+          if (!ok) return;
+          await this.finishRegularTake(session, answers, 'manual');
+          return;
+        }
+        gi += 1; pi = 0; window._passageTab = 0;
+        if (gi >= groups.length) {
+          const n = findNextUnanswered(0, -1);
+          // Avoid infinite loop: if we already visited all groups, prefer submit
+          const allVisited = groups.every((_, i) => {
+            const g = groups[i];
+            if (g.kind === 'passage') return (g.questions || []).every(q => q && Object.prototype.hasOwnProperty.call(answers, q.id));
+            return g.question && Object.prototype.hasOwnProperty.call(answers, g.question.id);
+          });
+          if (n && !allVisited) { gi = n.gi; pi = n.pi; renderTake(); return; }
+          const ok = await UI.confirm('Submit this assessment? You will not be able to change answers after submitting.', 'Submit assessment');
+          if (!ok) {
+            // stay on last answered group
+            gi = Math.max(0, groups.length - 1);
+            renderTake();
+            return;
+          }
+          await this.finishRegularTake(session, answers, 'manual');
+        } else renderTake();
+      };
+
+      // Disable right-click except inside table-fill (copy/paste only)
+      document.documentElement.classList.add('taking-exam');
+      document.body.classList.add('taking-exam');
+      document.querySelectorAll('.exam-take-wrap').forEach(wrap => {
+        wrap.oncontextmenu = (e) => {
+          const inTable = e.target.closest('.table-fill-take, .tf-calculator, .tf-clip-history, .tf-student-blank');
+          if (inTable) {
+            // allow browser menu for copy/paste in table fill
+            return true;
+          }
+          e.preventDefault();
+          return false;
+        };
+      });
+
+      const nextBtn = document.getElementById('take-next');
+      const endBtn = document.getElementById('take-end-btn');
+      if (nextBtn) nextBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); goNext(false, false); };
+      document.querySelectorAll('[data-pass-tab]').forEach(btn => {
+        btn.onclick = () => {
+          window._passageTab = Number(btn.dataset.passTab) || 0;
+          const tabs = (g.passage && g.passage.passages && g.passage.passages.length)
+            ? g.passage.passages
+            : [{ title: 'Passage 1', html: (g.passage && (g.passage.passageHtml || g.passage.prompt)) || '' }];
+          const html = (tabs[window._passageTab] && tabs[window._passageTab].html) || '';
+          const doc = document.querySelector('.passage-doc-scroll .passage-doc');
+          if (doc) doc.innerHTML = html;
+          document.querySelectorAll('[data-pass-tab]').forEach(b => b.classList.toggle('active', Number(b.dataset.passTab) === window._passageTab));
+        };
+      });
+      if (endBtn) endBtn.onclick = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (window.Monitor) { Monitor._uiBusy = true; Monitor.submitting = true; }
+        try {
+          const ok = await UI.confirm(
+            'End this assessment now? Confirming will automatically submit your answers and end the assessment.',
+            'End assessment'
+          );
+          if (!ok) {
+            if (window.Monitor) { Monitor.submitting = false; Monitor._uiBusy = false; }
+            return;
+          }
+          save();
+          await this.finishRegularTake(session, answers, 'manual');
+        } catch (err) {
+          if (window.Monitor) { Monitor.submitting = false; Monitor._uiBusy = false; }
+          console.error(err);
+          await UI.alert(err.message || String(err), 'Error');
+        }
+      };
+      try { this.injectTestModeBar(); } catch (_) {}
+      if (!String(session.id).startsWith('test_')) {
+        try { this.injectStudentChatFab(session.id); } catch (_) {}
+        try { this._watchInstructorEnd(session.id); } catch (_) {}
+      }
+      try {
+        if (window.IdleGuard) {
+          const isTest = !!(session._testMode || window._testMode || String(session.id || '').startsWith('test_'));
+          const staff = Auth.userProfile && ['superadmin','teacher','proctor'].includes(Auth.userProfile.role);
+          IdleGuard.idleMs = (isTest || staff) ? (10 * 60 * 1000) : (5 * 60 * 1000);
+          IdleGuard.start(async () => {
+            try {
+              if (document.getElementById('btn-builder-undo') || document.getElementById('exam-title')) {
+                App.saveAutosave && App.saveAutosave();
+                // best-effort cloud draft if editing
+                try {
+                  if (typeof App.saveAssessment === 'function' && document.getElementById('exam-title')) {
+                    await App.saveAssessment('draft', null, { silent: true }).catch(() => {});
+                  }
+                } catch (_) {}
+              }
+            } catch (_) {}
+            try { if (window.Monitor) Monitor.stop(); } catch (_) {}
+            if (isTest) {
+              try { await this.finishRegularTake(session, window._takeAnswers || {}, 'idle-timeout'); } catch (_) {}
+              try { window._testMode = false; } catch (_) {}
+              // Do not sign out / reload — return to instructor home
+              try { this.clearExamQuery(); } catch (_) {}
+              try { this.showInstructorHome ? this.showInstructorHome() : this.showDashboard(); } catch (_) {}
+              return;
+            }
+            await this.finishRegularTake(session, window._takeAnswers || {}, 'idle-timeout');
+          });
+        }
+      } catch (_) {}
+      try {
+        if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+          document.documentElement.requestFullscreen().catch(() => {});
+        }
+      } catch (_) {}
+    };
+
+    this._endedHandled = false;
+    try {
+      if (window.Monitor) {
+        Monitor.sessionId = session.id;
+        Monitor.examId = session.examId || session.exam?.id;
+        Monitor.submitting = false;
+      }
+    } catch (_) {}
+    renderTake();
+    this._runTimer(session, async () => {
+      Object.assign(answers, window._takeAnswers || {});
+      await this.finishRegularTake(session, answers, 'time-up');
+    });
+  },
+
+
+  showAnswerOverview(session, answers, groups, renderTake) {
+    const items = [];
+    (groups || []).forEach((g, gi) => {
+      const qs = g.questions || (g.question ? [g.question] : []);
+      qs.forEach((q, qi) => {
+        if (!q || !q.id) return;
+        const a = answers[q.id];
+        let preview = '—';
+        try {
+          if (a == null || a === '') preview = '—';
+          else if (typeof a === 'string' || typeof a === 'number') preview = String(a);
+          else if (Array.isArray(a)) preview = a.join(', ');
+          else if (typeof a === 'object') preview = JSON.stringify(a).slice(0, 120);
+        } catch (_) {}
+        items.push({ gi, qi, q, preview });
+      });
+    });
+    const app = document.getElementById('app');
+    app.innerHTML = `
+      <div class="exam-take-wrap take-fullscreen answer-overview-page">
+        <div class="take-topbar">
+          <div class="take-topbar-meta"><strong>Review your answers</strong>
+            <span class="text-muted">Tap a question to edit · then submit</span>
+          </div>
+        </div>
+        <div class="answer-overview-list" style="overflow-y:auto;max-height:calc(100svh - 8rem);padding:1rem">
+          ${items.map((it, idx) => `
+            <button type="button" class="answer-overview-row" data-ov-gi="${it.gi}" data-ov-qi="${it.qi}" style="display:block;width:100%;text-align:left;margin-bottom:0.5rem;padding:0.85rem 1rem;border:1px solid var(--border);border-radius:10px;background:var(--card-bg,#fff);cursor:pointer">
+              <div style="font-weight:600">Q${idx + 1}. ${escapeHtml((it.q.prompt || it.q.statement || it.q.type || 'Question').toString().slice(0, 100))}</div>
+              <div class="text-muted" style="font-size:0.9rem;margin-top:0.25rem">${escapeHtml(it.preview)}</div>
+            </button>`).join('') || '<p class="text-muted">No questions.</p>'}
+        </div>
+        <div class="take-nav" style="display:flex;gap:0.75rem;justify-content:center;padding:1rem">
+          <button type="button" class="btn btn-ghost" id="ov-back">Back to last question</button>
+          <button type="button" class="btn btn-primary take-submit-btn" id="ov-final-submit" style="transform:scale(1.15)">Submit assessment</button>
+        </div>
+      </div>`;
+    document.getElementById('ov-final-submit').onclick = async () => {
+      const ok = await UI.confirm('Submit your assessment now? You will not be able to change answers after this.', 'Submit assessment');
+      if (!ok) return;
+      this.finishRegularTake(session, answers, 'manual');
+    };
+    document.getElementById('ov-back').onclick = () => {
+      // stay at last group
+      renderTake();
+    };
+    app.querySelectorAll('[data-ov-gi]').forEach(btn => {
+      btn.onclick = () => {
+        const gi = Number(btn.getAttribute('data-ov-gi'));
+        // set outer gi via renderTake closure — need to mutate groups index
+        // Store jump target
+        window._overviewJumpGi = gi;
+        renderTake();
+      };
+    });
+  },
+
+  async finishRegularTake(session, answers, reason = 'manual') {
+    // Always kill live uploads first (protects Spark write quota)
+    try { if (window.Monitor) Monitor.markSubmitting(); } catch (_) {}
+    try { if (window.Monitor) Monitor.stop(); } catch (_) {}
+    // Ensure screen share tracks end and integrity writing stops
+    try { if (window.Monitor && Monitor.stream) Monitor.stream.getTracks().forEach(t => t.stop()); } catch (_) {}
+    try { CodeEditor.beginSubmit(); } catch (_) {}
+    const isTest = !!(session._testMode || window._testMode || String(session.id).startsWith('test_'));
+    if (!isTest) {
+      try {
+        await Exam.updateSessionAnswers(session.id, answers || {});
+        const exam = session.exam || await Exam.getExam(session.examId);
+        const st = this.computeAttemptStats({ ...session, answers: answers || {} }, exam);
+        await window.db.collection('sessions').doc(session.id).update({
+          totalQuestions: st.total,
+          correctCount: st.correct,
+          incorrectCount: st.incorrect,
+          unattemptedCount: st.unattempted,
+          accuracy: st.accuracy,
+          questionsSnapshot: session.questionsSnapshot || (exam ? Regular.flattenQuestions(exam) : [])
+        }).catch(() => {});
+        await Exam.submitSession(session.id, reason === 'time-up' ? 'time-up' : 'manual');
+      } catch (e) { console.error(e); }
+    }
+    this.clearExamQuery();
+    document.getElementById('student-chat-fab')?.remove();
+    document.getElementById('test-mode-bar')?.remove();
+    window._testMode = false;
+    if (isTest) {
+      try { if (window.Monitor) Monitor.stop(); } catch (_) {}
+      window._testMode = false;
+      // Local preview results (not saved to Firestore)
+      try {
+        const examObj = session.exam || {};
+        session.answers = answers || {};
+        session.status = 'submitted';
+        session.submittedAt = { toDate: () => new Date() };
+        session.startedAt = session.startedAt || (Date.now() - 60000);
+        session.durationMs = Math.max(0, Date.now() - (Number(session.startedAt) || Date.now()));
+        const st = this.computeAttemptStats(session, examObj);
+        session.score = st.correct;
+        session.maxScore = st.total;
+        session.accuracy = st.accuracy;
+        session.examTitle = examObj.title || 'Test preview';
+        session.subject = examObj.subject || '';
+        window._testPreviewSession = session;
+        // Render result UI from in-memory session
+        await this.showStudentAttemptFromObject(session, examObj);
+        return;
+      } catch (e) {
+        console.warn('test result', e);
+        this.renderShell(`
+          <div class="card empty-state times-up-card">
+            <h2>Preview ended</h2>
+            <p>Test as student session finished. This did not count as a real submission.</p>
+            <div class="action-btns" style="justify-content:center">
+              <button class="btn btn-primary" onclick="window.close()">Close tab</button>
+              <button class="btn btn-ghost" onclick="App.showInstructorHome()">Back to assessments</button>
+            </div>
+          </div>
+        `, 'exams');
+        return;
+      }
+    }
+    const isMock = !!(session.isMock || window._isMockExam);
+    try { window._isMockExam = false; } catch (_) {}
+    // Persist isMock + score on session so Mock History lists it
+    if (!isTest && session.id && !String(session.id).startsWith('test_')) {
+      try {
+        const exam = session.exam || (session.examId && !String(session.examId).startsWith('mock_') ? await Exam.getExam(session.examId) : null);
+        const st = this.computeAttemptStats({ ...session, answers: answers || {} }, exam || session.exam || { questions: session.questionsSnapshot || [] });
+        const started = session.startedAt?.toMillis?.() || session.startedAt || session.joinedAt?.toMillis?.() || session.joinedAt || null;
+        const durationMs = started ? Math.max(0, Date.now() - Number(started)) : (session.durationMs || 0);
+        const patch = {
+          status: 'submitted',
+          isMock: !!isMock,
+          score: st.correct,
+          maxScore: st.total,
+          accuracy: st.accuracy,
+          correctCount: st.correct,
+          incorrectCount: st.incorrect,
+          unattemptedCount: st.unattempted,
+          totalQuestions: st.total,
+          answers: answers || {},
+          questionsSnapshot: session.questionsSnapshot || [],
+          durationMs,
+          timeTakenMinutes: Math.max(1, Math.round(durationMs / 60000)) || null,
+          submittedAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+        await window.db.collection('sessions').doc(session.id).set(patch, { merge: true });
+        session = { ...session, ...patch, answers: answers || {} };
+      } catch (e) { console.warn('finish persist', e); }
+    }
+    // Always open the result detail for this attempt
+    try {
+      if (session.id && !String(session.id).startsWith('test_')) {
+        await this.showStudentAttempt(session.id);
+        return;
+      }
+    } catch (e) { console.warn(e); }
+    this.renderShell(`
+      <div class="card empty-state times-up-card">
+        <h2>${reason === 'time-up' ? "Time's up!" : (isMock ? 'Mock assessment submitted' : 'Assessment submitted')}</h2>
+        <p>Your answers were submitted${reason === 'time-up' ? ' automatically' : ''}.</p>
+        <div class="action-btns" style="justify-content:center">
+          <button class="btn btn-primary" onclick="${isMock ? 'App.showMockHistory()' : 'App.showStudentHistory()'}">${isMock ? 'View mock history' : 'View results'}</button>
+          <button class="btn btn-ghost" onclick="App.showDashboard()">Back to home</button>
+        </div>
+      </div>
+    `, isMock ? 'mock' : 'history');
+  },
+
+  _runTimer(session, onExpireExtra) {
+    let endsAt = Number(session.endsAt) || (Date.now() + 3600000);
+    this._timerPaused = false;
+    this._timerPauseStarted = null;
+    this._examTimerInterval = setInterval(async () => {
+      // Pause while section instruction is showing
+      if (this._timerPaused) {
+        if (!this._timerPauseStarted) this._timerPauseStarted = Date.now();
+        const el = document.getElementById('exam-timer');
+        if (el) {
+          const remain = Math.max(0, endsAt - Date.now());
+          el.textContent = formatMs(remain);
+          el.classList.remove('timer-warn');
+        }
+        return;
+      }
+      if (this._timerPauseStarted) {
+        endsAt += (Date.now() - this._timerPauseStarted);
+        session.endsAt = endsAt;
+        this._timerPauseStarted = null;
+      }
+      const remain = endsAt - Date.now();
+      const el = document.getElementById('exam-timer');
+      if (el) {
+        el.textContent = formatMs(Math.max(0, remain));
+        if (remain < 300000) el.classList.add('timer-warn');
+      }
+      if (remain <= 0) {
+        clearInterval(this._examTimerInterval);
+        CodeEditor.lockEditor?.();
+        document.getElementById('timesup-overlay')?.classList.remove('hidden');
+        try {
+          if (onExpireExtra) await onExpireExtra();
+          await Exam.submitSession(session.id, 'timeout');
+        } catch (e) { console.error(e); }
+      }
+    }, 500);
+
+    Exam.listenToSession(session.id, (s) => {
+      if (s.endsAt && s.endsAt > endsAt) endsAt = s.endsAt;
+    });
+  },
+
+  // ---- Grading / export (retained) ----
+  async publishDraft(examId) {
+    const exam = await Exam.getExam(examId);
+    if (!exam) { await UI.alert('Not found.', 'Error'); return; }
+    if (exam.examType === 'regular' && !(exam.questions || []).length && !(exam.sections || []).length) {
+      await UI.alert('Add at least one question before publishing.', 'No questions');
+      return;
+    }
+    const schedule = await this.pickSchedule();
+    if (!schedule) return;
+    // Generate / refresh 8-digit assessment code (same as create)
+    let assessmentCode = String(exam.assessmentCode || '').replace(/\D/g, '').slice(0, 8);
+    if (!assessmentCode || assessmentCode.length < 8) {
+      for (let attempt = 0; attempt < 8; attempt++) {
+        assessmentCode = String(Math.floor(10000000 + Math.random() * 90000000));
+        try {
+          const exists = await window.db.collection('exams').where('assessmentCode', '==', assessmentCode).limit(1).get();
+          if (exists.empty) break;
+        } catch (_) { break; }
+      }
+    }
+    const payload = {
+      startAt: schedule.startAt,
+      endAt: schedule.endAt,
+      status: 'published', runId: 'run_' + Date.now(),
+      active: true,
+      durationMinutes: schedule.durationMinutes || Math.max(1, Math.round((schedule.endAt - schedule.startAt) / 60000)),
+      assessmentCode
+    };
+    if (schedule.randomizeQuestions != null) payload.randomizeQuestions = !!schedule.randomizeQuestions;
+    await Exam.updateExam(examId, payload);
+    // Optional invites (same as builder publish)
+    try {
+      const inv = await UI.prompt(
+        'Invite student emails (optional, comma or newline separated). Leave blank to skip.',
+        '',
+        'Invite students',
+        'student@example.com'
+      );
+      if (inv && String(inv).trim()) {
+        const emails = String(inv).split(/[\n,;]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+        for (const email of emails) {
+          try {
+            await window.db.collection('examInvites').add({
+              examId,
+              email,
+              createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+              createdBy: Auth.currentUser?.uid || null
+            });
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    await this.showPublishSuccessModal(examId);
+  },
+
+  pickSchedule() {
+    return new Promise((resolve) => {
+      const toLocal = (d) => {
+        const pad = n => String(n).padStart(2, '0');
+        return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+      };
+      const now = new Date();
+      const later = new Date(now.getTime() + 3600000);
+      UI._root().innerHTML = `<div class="modal-overlay ui-modal-overlay"><div class="modal ui-modal">
+        <h2>Publish schedule</h2>
+        <div class="form-group"><label>Start date & time</label>
+          <input type="datetime-local" id="sched-start" class="form-control" value="${toLocal(now)}" /></div>
+        <div class="form-group"><label>End date & time</label>
+          <input type="datetime-local" id="sched-end" class="form-control" value="${toLocal(later)}" /></div>
+        <div class="form-group"><label>Time limit (minutes)</label>
+          <input type="number" id="sched-mins" class="form-control" min="1" value="60" /></div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+            <input type="checkbox" id="sched-randomize" />
+            Randomize questions for students
+          </label>
+          <p class="text-muted" style="font-size:0.8rem;margin:0.35rem 0 0">Sections stay in order. Questions inside each section are shuffled per student. Passage and Table fill blocks are not shuffled.</p>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" id="sched-cancel">Cancel</button>
+          <button class="btn btn-primary" id="sched-ok">Publish</button>
+        </div>
+      </div></div>`;
+      document.getElementById('sched-cancel').onclick = () => { UI.close(); resolve(null); };
+      document.getElementById('sched-ok').onclick = () => {
+        const startAt = new Date(document.getElementById('sched-start').value).getTime();
+        let endAt = new Date(document.getElementById('sched-end').value).getTime();
+        const mins = Number(document.getElementById('sched-mins').value) || 0;
+        if (mins > 0) endAt = startAt + mins * 60000;
+        if (!startAt || !endAt || endAt <= startAt) {
+          UI.alert('End must be after start.', 'Schedule');
+          return;
+        }
+        if (startAt < Date.now() - 60000) {
+          UI.alert('Start cannot be in the past.', 'Schedule');
+          return;
+        }
+        const randomizeQuestions = !!document.getElementById('sched-randomize')?.checked;
+        UI.close();
+        resolve({
+          startAt,
+          endAt,
+          durationMinutes: Math.max(1, Math.round((endAt - startAt) / 60000)),
+          randomizeQuestions
+        });
+      };
+    });
+  },
+
+  async showIntegrityHistory(examId) {
+    const exam = await Exam.getExam(examId);
+    this.renderShell(`
+      <div class="card-header page-header-responsive">
+        <h2 class="page-title">Integrity issues — ${escapeHtml(exam?.title || '')}</h2>
+        <div class="action-btns">
+          <button class="btn btn-ghost" id="btn-export-integrity-pdf">Export PDF</button>
+          <button class="btn btn-ghost" onclick="App.showInstructorHome()">Back</button>
+        </div>
+      </div>
+      <div class="card">
+        <input type="search" id="integrity-filter-page" class="form-control" placeholder="Filter by name, email, type..." />
+      </div>
+      <div id="integrity-hist-list" class="mt-2">Loading...</div>
+    `, 'exams');
+
+    let all = [];
+    const render = () => {
+      const q = (document.getElementById('integrity-filter-page')?.value || '').toLowerCase();
+      const items = q ? all.filter(n =>
+        (n.studentName || '').toLowerCase().includes(q) ||
+        (n.studentEmail || '').toLowerCase().includes(q) ||
+        ((n.type === 'outside-assessment' || n.type === 'window-blur' ? 'Clicked outside assessment page' : (n.type || ''))).toLowerCase().includes(q) ||
+        (n.details || '').toLowerCase().includes(q)
+      ) : all;
+      window._integrityExportRows = items;
+      const el = document.getElementById('integrity-hist-list');
+      if (!items.length) {
+        el.innerHTML = '<p class="text-muted">No integrity events recorded for this assessment.</p>';
+        return;
+      }
+      // dedupe
+      const seen = new Set();
+      const deduped = items.filter(n => {
+        const ts = n.createdAt?.toMillis?.() || Date.parse(n.timestamp || 0) || 0;
+        const key = [n.sessionId||'', n.type||'', n.details||'', Math.floor(ts/60000)].join('|');
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      window._integrityExportRows = deduped;
+      const hideNames = !!window._integrityHideNames;
+      el.innerHTML = `<div class="table-wrap"><div style="margin-bottom:0.5rem">
+        <button type="button" class="integrity-eye-btn" id="toggle-hide-names" title="Hide/show student names">${hideNames ? '👁️' : '👁️‍🗨️'}</button>
+        <span class="text-muted" style="font-size:0.85rem">${hideNames ? 'Names hidden' : 'Names visible'}</span>
+      </div>
+      <table class="table integrity-table">
+        <thead><tr><th></th><th>Name</th><th>Email</th><th>Issue</th><th>Date stamp</th></tr></thead>
+        <tbody>${deduped.map(n => {
+          const time = n.createdAt?.toDate ? n.createdAt.toDate().toLocaleString()
+            : (n.timestamp ? new Date(n.timestamp).toLocaleString() : '');
+          const thumb = n.screenshot || n.extra?.screenshot || n.cameraScreenshot || n.extra?.cameraScreenshot || n.screenThumb;
+          const rawName = n.studentName || n.studentEmail || 'Student';
+          const mask = (s) => '•'.repeat(Math.max(6, String(s).length));
+          const nameDisp = hideNames ? mask(rawName) : escapeHtml(rawName);
+          const emailDisp = hideNames ? mask(n.studentEmail || '') : escapeHtml(n.studentEmail || '');
+          const issueLabel = ({
+            'tab-hidden': 'Switching tabs: Leaving the assessment window or browser tab',
+            'window-blur': 'Switching tabs: Leaving the assessment window or browser tab',
+            'paste': 'Copying content: Attempting to copy text or questions',
+            'paste-critical': 'Copying content: Attempting to copy text or questions',
+            'paste-message': 'Copying content: Attempting to copy text or questions',
+            'copy': 'Copying content: Attempting to copy text or questions',
+            'resize': 'Resizing the window: Changing the browser size to break full-screen',
+            'right-click': 'Right-clicking: Opening context menus on the page',
+            'extension-suspect': 'Using web extensions: Unauthorized browser tools',
+            'external-search-suspect': 'Using external search tools: Suspicious resize + right-click pattern',
+            'exited-fullscreen': 'Exiting full-screen mode: Quitting required full-screen view',
+            'connection-loss': 'Left due to loss of connection / poor network'
+          })[n.type] || (n.details || n.type || 'Violation');
+          return `<tr>
+            <td data-label="Shot">${thumb && String(thumb).startsWith('data:') ? `<img class="integrity-thumb" src="${thumb}" style="width:72px;height:auto;display:block;margin:0 auto;cursor:pointer" onclick="UI.showImage(this.src,'Integrity screenshot')" />` : '—'}</td>
+            <td data-label="Name" class="${hideNames ? 'integrity-name-masked' : ''}">${nameDisp}</td>
+            <td data-label="Email" class="${hideNames ? 'integrity-name-masked' : ''}">${emailDisp}</td>
+            <td data-label="Issue">${escapeHtml(issueLabel)}</td>
+            <td data-label="Time">${escapeHtml(time)}</td>
+          </tr>`;
+        }).join('')}</tbody></table></div>`;
+      document.getElementById('toggle-hide-names').onclick = () => {
+        window._integrityHideNames = !window._integrityHideNames;
+        render();
+      };
+    };
+
+    const merge = (rows) => {
+      const map = {};
+      rows.forEach(n => {
+        const key = n.id || (n.sessionId + '_' + (n.timestamp || n.type + n.details));
+        map[key] = n;
+      });
+      all = Object.values(map);
+      all.sort((a, b) => {
+        const ta = a.createdAt?.toMillis?.() || Date.parse(a.timestamp || 0) || 0;
+        const tb = b.createdAt?.toMillis?.() || Date.parse(b.timestamp || 0) || 0;
+        return tb - ta;
+      });
+      render();
+    };
+
+    // 1) integrityHistory
+    try {
+      const unsub = window.db.collection('integrityHistory').where('examId', '==', examId)
+        .onSnapshot(snap => {
+          merge(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        }, () => {});
+      Dashboard.unsubscribers.push(unsub);
+    } catch (_) {}
+
+    // 2) notifications
+    try {
+      const unsub2 = window.db.collection('notifications').where('examId', '==', examId)
+        .onSnapshot(snap => {
+          merge([...(window._integrityExportRows || all), ...snap.docs.map(d => ({ id: d.id, ...d.data() }))]);
+        }, () => {});
+      Dashboard.unsubscribers.push(unsub2);
+    } catch (_) {}
+
+    // 3) session.events fallback (always works if sessions readable)
+    try {
+      const unsub3 = Exam.listenToSessions(examId, (sessions) => {
+        const fromSessions = [];
+        sessions.forEach(s => {
+          (s.events || []).forEach((e, i) => {
+            fromSessions.push({
+              id: s.id + '_ev_' + i,
+              sessionId: s.id,
+              examId,
+              studentName: s.studentName,
+              studentEmail: s.studentEmail,
+              type: e.type,
+              details: e.details,
+              timestamp: e.timestamp,
+              extra: e,
+              screenshot: e.screenshot
+            });
+          });
+        });
+        merge([...all, ...fromSessions]);
+      });
+      Dashboard.unsubscribers.push(unsub3);
+    } catch (_) {}
+
+    document.getElementById('integrity-filter-page').oninput = render;
+    document.getElementById('btn-export-integrity-pdf').onclick = async () => {
+      const rows = window._integrityExportRows || all;
+      const title = exam?.title || 'Assessment';
+      const stamp = fileStamp();
+      try {
+        const jsPDF = await this.ensureJsPdf();
+        const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+        let y = 40;
+        doc.setFontSize(14);
+        doc.text('Integrity issues — ' + title, 40, y); y += 24;
+        doc.setFontSize(10);
+        rows.forEach((n) => {
+          const time = n.createdAt?.toDate ? n.createdAt.toDate().toLocaleString()
+            : (n.timestamp ? new Date(n.timestamp).toLocaleString() : '');
+          const line = `${n.studentName || ''} | ${n.studentEmail || ''} | ${(n.type === 'outside-assessment' || n.type === 'window-blur' ? 'Clicked outside assessment page' : (n.type || ''))} | ${n.details || ''} | ${time}`;
+          const lines = doc.splitTextToSize(line, 520);
+          if (y + lines.length * 12 > 780) { doc.addPage(); y = 40; }
+          doc.text(lines, 40, y);
+          y += lines.length * 12 + 8;
+          const thumb = n.screenshot || n.extra?.screenshot || n.screenThumb || n.extra?.screenThumb || n.hqScreenshot;
+          if (thumb && String(thumb).startsWith('data:image')) {
+            try {
+              if (y > 600) { doc.addPage(); y = 40; }
+              const fmt = String(thumb).includes('image/png') ? 'PNG' : 'JPEG';
+              // strip nothing — jsPDF accepts data URL
+              doc.addImage(thumb, fmt, 40, y, 160, 100);
+              y += 110;
+            } catch (imgErr) {
+              try {
+                // fallback: re-encode as JPEG via canvas if needed
+                console.warn('addImage failed', imgErr);
+              } catch (_) {}
+            }
+          }
+        });
+        doc.save(safeFilePart(title) + '-' + stamp + '.pdf');
+        await UI.alert('PDF downloaded.', 'Export');
+      } catch (e) {
+        console.error(e);
+        // Fallback without jsPDF
+        try {
+          const rows = window._integrityExportRows || [];
+          const title = exam?.title || 'Assessment';
+          const stamp = typeof fileStamp === 'function' ? fileStamp() : Date.now();
+          const body = `<h1>Integrity issues — ${String(title).replace(/</g,'')}</h1>
+            <p class="muted">Exported ${new Date().toLocaleString()}</p>
+            <table><thead><tr><th>Thumb</th><th>Name</th><th>Email</th><th>Issue</th><th>Date</th></tr></thead><tbody>
+            ${rows.map(n => {
+              const time = n.createdAt?.toDate ? n.createdAt.toDate().toLocaleString()
+                : (n.timestamp ? new Date(n.timestamp).toLocaleString() : '');
+              const thumb = n.screenshot || n.extra?.screenshot || n.screenThumb || '';
+              const img = (thumb && String(thumb).startsWith('data:image'))
+                ? `<img src="${thumb}" style="width:120px;height:auto;border-radius:4px" />` : '';
+              return `<tr><td>${img}</td><td>${String(n.studentName||'').replace(/</g,'')}</td>
+                <td>${String(n.studentEmail||'').replace(/</g,'')}</td>
+                <td>${String(n.type||n.details||'').replace(/</g,'')}</td>
+                <td>${String(time).replace(/</g,'')}</td></tr>`;
+            }).join('')}
+            </tbody></table>`;
+          this.exportHtmlAsPdf(safeFilePart(title) + '-' + stamp, 'Integrity — ' + title, body);
+          await UI.alert('Opened printable export (use Print → Save as PDF).', 'Export');
+        } catch (e2) {
+          await UI.alert((e && e.message) || 'Could not export PDF.', 'Export');
+        }
+      }
+    };
+    document.getElementById('btn-export-integrity-hq').onclick = () => {
+      const rows = window._integrityExportRows || all;
+      const stamp = fileStamp();
+      let n = 0;
+      rows.forEach(row => {
+        const thumb = row.screenshot || row.extra?.screenshot || row.screenThumb || row.extra?.cameraScreenshot;
+        if (!thumb || !String(thumb).startsWith('data:')) return;
+        const nameParts = String(row.studentName || row.studentEmail || 'student').trim().split(/\s+/);
+        const last = nameParts.slice(-1)[0] || 'student';
+        const first = nameParts[0] || '';
+        const issue = safeFilePart(row.type || 'issue');
+        const fname = `${safeFilePart(last)}${safeFilePart(first)}-${issue}-${stamp}.jpg`;
+        downloadDataUrl(thumb, fname);
+        n++;
+      });
+      UI.alert(n ? (`Downloaded ${n} image(s).`) : 'No HQ images in the current filter.', 'Export HQ');
+    };
+
+  },
+
+  async gradeSession(sessionId, examId) {
+    const exam = await Exam.getExam(examId);
+    const snap = await window.db.collection('sessions').doc(sessionId).get();
+    if (!snap.exists) { await UI.alert('Not found.', 'Error'); return; }
+    const session = { id: snap.id, ...snap.data() };
+    const maxScore = Number(exam.maxScore) || 50;
+    const auto = Exam.autoGrade(session.code, exam.answerKey, maxScore);
+    const existing = await Exam.getGrade(sessionId);
+    const scoreStr = await UI.prompt(
+      `Grade ${session.studentName || session.studentEmail}\nMax: ${maxScore}` +
+      (auto.note ? `\nAuto: ${auto.note} -> ${auto.score}` : '') + `\nEnter score:`,
+      String(existing?.score ?? auto.score ?? ''),
+      'Grade'
+    );
+    if (scoreStr === null) return;
+    const score = Number(scoreStr);
+    if (Number.isNaN(score) || score < 0 || score > maxScore) { await UI.alert('Invalid score.', 'Error'); return; }
+    const comment = (await UI.prompt('Comment (optional):', existing?.comment || '', 'Comment')) || '';
+    const percent = Math.round((score / maxScore) * 1000) / 10;
+    await Exam.saveGrade(sessionId, examId, {
+      studentId: session.studentId, studentEmail: session.studentEmail, studentName: session.studentName,
+      score, maxScore, percent, comment, method: 'manual'
+    });
+    await UI.alert(`Saved ${score}/${maxScore} (${percent}%)`, 'Graded');
+  },
+
+  async showExamResults(examId) {
+    try { UI.showLoading('Loading results…'); } catch (_) {}
+    let exam;
+    try {
+      exam = await Exam.getExam(examId);
+    } catch (e) {
+      try { UI.hideLoading(); } catch (_) {}
+      await UI.alert(e.message || 'Could not load assessment.', 'Results');
+      return this.showInstructorHome ? this.showInstructorHome() : this.showDashboard();
+    }
+    if (!exam) {
+      try { UI.hideLoading(); } catch (_) {}
+      await UI.alert('Assessment not found.', 'Results');
+      return this.showInstructorHome ? this.showInstructorHome() : this.showDashboard();
+    }
+    this.renderShell(`
+      <div class="card-header page-header-responsive">
+        <h2 class="page-title">Results — ${escapeHtml(exam.title || 'Assessment')}</h2>
+        <div class="action-btns">
+          <button class="btn btn-ghost" id="btn-export-xlsx">Export Excel</button>
+          <button class="btn btn-ghost" onclick="App.showInstructorHome()">Back</button>
+        </div>
+      </div>
+      <div id="results-stats" class="stats-grid">Loading stats...</div>
+      <div id="results-table" class="mt-2">Loading...</div>
+    `, 'exams');
+
+    const sessionsSnap = await window.db.collection('sessions').where('examId', '==', examId).get();
+    const sessions = sessionsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const grades = await Exam.listGrades(examId);
+    const gradeMap = Object.fromEntries(grades.map(g => [g.sessionId, g]));
+    const questions = Regular.flattenQuestions(exam);
+
+    // Auto-grade missing (use session accuracy/score when already computed — much faster)
+    for (const s of sessions) {
+      if (gradeMap[s.id]) continue;
+      if (s.score != null && s.maxScore != null) {
+        gradeMap[s.id] = {
+          score: s.score,
+          maxScore: s.maxScore,
+          percent: s.accuracy != null ? s.accuracy : (s.maxScore ? Math.round((s.score / s.maxScore) * 1000) / 10 : 0),
+          sessionId: s.id
+        };
+        continue;
+      }
+      if (questions.length && s.answers) {
+        try {
+          const g = Regular.gradeAnswers(questions, s.answers);
+          gradeMap[s.id] = { ...g, sessionId: s.id };
+        } catch (_) {}
+      } else if (s.code && exam.answerKey) {
+        try {
+          const g = Exam.autoGrade(s.code, exam.answerKey, exam.maxScore || 100);
+          gradeMap[s.id] = { score: g.score, maxScore: exam.maxScore || 100, percent: g.percent, sessionId: s.id };
+        } catch (_) {}
+      }
+    }
+
+    const graded = Object.values(gradeMap).filter(g => g.score != null);
+    const studentCount = sessions.length;
+    const totalItems = questions.length || 1;
+    const avg = graded.length ? graded.reduce((a, g) => a + (Number(g.percent) || 0), 0) / graded.length : 0;
+    const perfect = graded.filter(g => Number(g.percent) >= 100).length;
+
+    // Most incorrect: for regular, count wrong per question
+    const wrongCount = {};
+    questions.forEach(q => { wrongCount[q.id] = { prompt: q.prompt || q.id, wrong: 0 }; });
+    // Limit hardest-Q scan for speed (max 80 questions × 60 sessions)
+    const qSample = questions.slice(0, 80);
+    const sSample = sessions.filter(s => s.answers).slice(0, 60);
+    sSample.forEach(s => {
+      qSample.forEach(q => {
+        try {
+          const g = Regular.gradeAnswers([q], { [q.id]: s.answers[q.id] });
+          if ((g.score || 0) < (g.maxScore || 1) && wrongCount[q.id]) wrongCount[q.id].wrong++;
+        } catch (_) {}
+      });
+    });
+    const hardest = Object.values(wrongCount).sort((a, b) => b.wrong - a.wrong).slice(0, 5);
+
+    const topPerformers = sessions.map(s => {
+      const g = gradeMap[s.id] || {};
+      const submittedAt = s.submittedAt?.toMillis?.() || s.submittedAt || 0;
+      const startedAt = s.startedAt?.toMillis?.() || s.createdAt?.toMillis?.() || 0;
+      const duration = (submittedAt && startedAt) ? Math.max(0, submittedAt - startedAt) : (s.durationMs || 0);
+      return {
+        name: s.studentName || s.studentEmail || 'Student',
+        email: s.studentEmail || '',
+        percent: Number(g.percent) || 0,
+        score: g.score,
+        duration
+      };
+    }).filter(p => p.percent > 0 || p.score != null)
+      .sort((a, b) => (b.percent - a.percent) || (a.duration - b.duration))
+      .slice(0, 5);
+
+    const pieTotal = hardest.reduce((a, h) => a + h.wrong, 0) || 1;
+    const colors = ['#2563eb','#8b5cf6','#14b8a6','#f59e0b','#f43f5e'];
+    let ang = 0;
+    const slices = hardest.map((h, i) => {
+      const frac = h.wrong / pieTotal;
+      const start = ang;
+      ang += frac * Math.PI * 2;
+      const x1 = 50 + 40 * Math.cos(start), y1 = 50 + 40 * Math.sin(start);
+      const x2 = 50 + 40 * Math.cos(ang), y2 = 50 + 40 * Math.sin(ang);
+      const large = frac > 0.5 ? 1 : 0;
+      return `<path d="M50,50 L${x1},${y1} A40,40 0 ${large} 1 ${x2},${y2} Z" fill="${colors[i % colors.length]}"><title>${escapeHtml(h.prompt).slice(0,40)} (${h.wrong})</title></path>`;
+    }).join('') || `<circle cx="50" cy="50" r="40" fill="var(--surface-2)" />`;
+    const legend = hardest.map((h, i) =>
+      `<div class="pie-legend-item"><span class="pie-swatch" style="background:${colors[i%colors.length]}"></span>${escapeHtml(h.prompt).slice(0,48)} (${h.wrong})</div>`
+    ).join('') || '<div class="text-muted">No data</div>';
+
+    const topList = (typeof topPerformers !== 'undefined' ? topPerformers : []).map((p, i) =>
+      `<div class="pie-legend-item"><strong>#${i+1}</strong> ${escapeHtml(p.name)} — ${p.percent}%${p.duration ? (' · ' + Math.round(p.duration/60000) + ' min') : ''}</div>`
+    ).join('') || '<div class="text-muted">No data</div>';
+
+    try { UI.hideLoading(); } catch (_) {}
+    document.getElementById('results-stats').innerHTML = `
+      <div class="results-stats-row">
+        <div class="stats-grid stats-4">
+          <div class="stat-card stat-blue"><div class="stat-val">${studentCount}</div><div class="stat-label">Students</div></div>
+          <div class="stat-card stat-purple"><div class="stat-val">${totalItems}</div><div class="stat-label">Total items</div></div>
+          <div class="stat-card stat-teal"><div class="stat-val">${avg.toFixed(1)}%</div><div class="stat-label">Average score</div></div>
+          <div class="stat-card stat-green"><div class="stat-val">${perfect}</div><div class="stat-label">Perfect scores</div></div>
+        </div>
+        <div class="stat-card pie-card">
+          <div class="stat-label">Most incorrect questions</div>
+          <div class="pie-wrap">
+            <svg viewBox="0 0 100 100" class="pie-svg">${slices}</svg>
+            <div class="pie-legend">${legend}</div>
+          </div>
+        </div>
+        <div class="stat-card pie-card">
+          <div class="stat-label">Top performing students</div>
+          <div class="pie-legend" style="margin-top:0.75rem">${topList}</div>
+        </div>
+      </div>`;
+
+    const el = document.getElementById('results-table');
+    el.innerHTML = `<div class="table-wrap"><table class="table" id="results-data-table"><thead><tr>
+      <th>Student</th><th>Email</th><th>Status</th><th>Score</th><th>%</th><th></th></tr></thead><tbody>
+      ${sessions.map(s => {
+        const g = gradeMap[s.id];
+        return `<tr>
+          <td>${escapeHtml(s.studentName||'')}</td><td>${escapeHtml(s.studentEmail||'')}</td>
+          <td>${escapeHtml(s.status)}</td>
+          <td>${g && g.score != null ? g.score+'/'+(g.maxScore||'') : '—'}</td>
+          <td>${g && g.percent != null ? g.percent+'%' : '—'}</td>
+          <td class="action-btns">
+            <button class="btn btn-sm btn-primary" onclick="App.gradeSession('${s.id}','${examId}')">Grade</button>
+            <button class="btn btn-sm btn-ghost" onclick="App.reEvaluateSession('${s.id}','${examId}')">Re-evaluate</button>
+            <button class="btn btn-sm btn-ghost" onclick="App.exportStudentReport('${s.id}','${examId}')">Export</button>
+          </td></tr>`;
+      }).join('')}</tbody></table></div>`;
+
+    document.getElementById('btn-export-xlsx').onclick = () => {
+      const rows = [['Name','Email','Status','Score','Max','Percent']];
+      sessions.forEach(s => {
+        const g = gradeMap[s.id];
+        rows.push([s.studentName||'', s.studentEmail||'', s.status||'', g?.score??'', g?.maxScore??'', g?.percent??'']);
+      });
+      rows.push(['']);
+      rows.push(['Summary']);
+      rows.push(['Students', studentCount]);
+      rows.push(['Total items', totalItems]);
+      rows.push(['Average %', avg.toFixed(1)]);
+      rows.push(['Perfect scores', perfect]);
+      hardest.forEach((h, i) => rows.push(['Hardest Q'+(i+1), String(h.prompt||'').replace(/\r?\n/g, ' '), (h.wrong) + ' wrong']));
+      const csv = rows.map(r => r.map(c => '"' + String(c ?? '').replace(/"/g, '""') + '"').join(',')).join('\r\n');
+      const stamp = fileStamp();
+      downloadText(safeFilePart(exam.title || 'results') + '-summary-' + stamp + '.csv', '\uFEFF' + csv);
+      UI.alert('Excel CSV downloaded.', 'Export');
+    };
+  },
+
+  async exportStudentReport(sessionId, examId) {
+    const exam = await Exam.getExam(examId);
+    const snap = await window.db.collection('sessions').doc(sessionId).get();
+    const session = { id: snap.id, ...snap.data() };
+    const grade = await Exam.getGrade(sessionId);
+    const text = [
+      'LVCC Assessment Portal — Student Report',
+      'Exam: ' + (exam.title || ''),
+      'Student: ' + (session.studentName || ''),
+      'Email: ' + (session.studentEmail || ''),
+      'Score: ' + (grade ? `${grade.score}/${grade.maxScore} (${grade.percent}%)` : 'N/A'),
+      'Comment: ' + (grade?.comment || ''),
+      '', '--- Answer ---', session.code || JSON.stringify(session.answers || {}, null, 2),
+      '', '--- Key ---', exam.answerKey || ''
+    ].join('\n');
+    downloadText(`report-${(session.studentEmail||sessionId).replace(/[^a-z0-9]/gi,'_')}.txt`, text);
+  },
+
+  async exportSummary(examId) {
+    const exam = await Exam.getExam(examId);
+    const sessionsSnap = await window.db.collection('sessions').where('examId', '==', examId).get();
+    const sessions = sessionsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const grades = await Exam.listGrades(examId);
+    const gradeMap = Object.fromEntries(grades.map(g => [g.sessionId, g]));
+    const rows = [['Name','Email','Status','Score','Max','Percent','Comment']];
+    sessions.forEach(s => {
+      const g = gradeMap[s.id];
+      rows.push([s.studentName||'', s.studentEmail||'', s.status||'', (g && g.score != null ? g.score : ''), (g && g.maxScore != null ? g.maxScore : (exam.maxScore || 50)), (g && g.percent != null ? g.percent : ''), (g?.comment||'').replace(/,/g,';')]);
+    });
+    downloadText(`summary-${examId}.csv`, rows.map(r => r.map(c => '"'+String(c).replace(/"/g,'""')+'"').join(',')).join('\n'));
+  },
+
+  async logout() {
+    if (!(await UI.confirm('Are you sure you want to log out?', 'Log out'))) return;
+    clearInterval(this._examTimerInterval);
+    Dashboard.clearListeners();
+    try { Monitor.stop(); } catch(_){}
+      CodeEditor.dispose();
+    await Auth.signOut();
+    window.history.replaceState({}, '', window.location.pathname);
+    this.showLogin();
+  },
+
+  showError(msg) {
+    document.getElementById('app').innerHTML = `
+      <div class="auth-container"><h1>Error</h1>
+      <p style="color:var(--danger)">${escapeHtml(msg)}</p>
+      <button class="btn btn-primary" onclick="location.reload()">Reload</button></div>`;
+  }
+};
+
+
+function fileStamp(d = new Date()) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}`;
+}
+function safeFilePart(s) {
+  return String(s || 'file').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 80);
+}
+function downloadDataUrl(dataUrl, filename) {
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function downloadText(filename, content) {
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+}
+function formatMs(ms) {
+  const s = Math.floor(ms / 1000), m = Math.floor(s / 60), h = Math.floor(m / 60);
+  const mm = String(m % 60).padStart(2, '0'), ss = String(s % 60).padStart(2, '0');
+  return h > 0 ? h + ':' + mm + ':' + ss : mm + ':' + ss;
+}
+window.App = App;
+window.downloadText = downloadText;
+window.formatMs = formatMs;
+document.addEventListener('DOMContentLoaded', () => App.init());
