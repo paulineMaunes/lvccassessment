@@ -626,3 +626,9 @@ If features seem missing, replace **all** app files from the zip (not only one J
 
 ## v1.5.71
 - Match student view: board 90vw wide; large center gap between Column A and B nodes; text uses full column width; no cramped column scrollbars
+
+## v1.5.72
+- Dark theme: near-black blue backgrounds
+- Sticky builder bar fully opaque (no content showing through on scroll)
+- Match assessment: ~40% less vertical spacing between rows
+- Match config: single control per row (removed double bullets)

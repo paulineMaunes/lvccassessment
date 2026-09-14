@@ -7805,3 +7805,108 @@ svg.match-lines {
     width: 100% !important;
   }
 }
+
+
+/* v1.5.72 */
+.match-builder .match-dot,
+.match-cfg-row .match-dot {
+  display: none !important;
+}
+.match-cfg-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+/* Sticky bar: fully opaque, covers scrolling content */
+.builder-sticky-bar {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 100 !important;
+  background: #ffffff !important;
+  opacity: 1 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.12) !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+  padding: 0.75rem 1rem !important;
+  margin: 0 0 1rem 0 !important;
+  isolation: isolate;
+}
+[data-theme="dark"] .builder-sticky-bar,
+[data-theme="dark"] .main-content .builder-sticky-bar {
+  background: #01080f !important;
+  border-bottom-color: #0a2540 !important;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.55) !important;
+}
+/* Pseudo cover so nothing shows through above the bar edge */
+.builder-sticky-bar::before {
+  content: '';
+  position: absolute;
+  left: 0; right: 0;
+  top: -12px;
+  height: 12px;
+  background: inherit;
+  pointer-events: none;
+}
+.builder-sticky-bar {
+  position: sticky !important;
+}
+
+/* Dark theme: near-black blue */
+[data-theme="dark"] {
+  --bg: #01060c !important;
+  --page-bg: #01060c !important;
+  --menu-bg: #020a12 !important;
+  --card-bg: #061018 !important;
+  --surface: #061018 !important;
+  --surface-2: #0a1520 !important;
+  --border: #0d2133 !important;
+}
+[data-theme="dark"] body,
+[data-theme="dark"] .shell,
+[data-theme="dark"] .main-content,
+[data-theme="dark"] .app-shell {
+  background: #01060c !important;
+}
+[data-theme="dark"] .sidebar,
+[data-theme="dark"] .nav-panel,
+[data-theme="dark"] aside.sidebar {
+  background: #020a12 !important;
+}
+[data-theme="dark"] .card,
+[data-theme="dark"] .assess-card,
+[data-theme="dark"] .stat-card,
+[data-theme="dark"] .gq-block,
+[data-theme="dark"] .modal,
+[data-theme="dark"] .ui-modal {
+  background: #061018 !important;
+}
+
+/* Match take: reduce vertical spacing ~40% */
+.match-ref .m-row.m-left,
+.match-ref .m-row.m-right {
+  min-height: 1.65rem !important;
+  padding: 0.08rem 0 !important;
+  gap: 0.5rem !important;
+}
+.match-ref .match-col,
+.match-ref .match-col-a,
+.match-ref .match-col-b {
+  gap: 0.45rem !important;
+  justify-content: flex-start !important;
+}
+.match-ref .m-text {
+  line-height: 1.2 !important;
+  font-size: clamp(0.82rem, 1.4vw, 1rem) !important;
+}
+.match-ref-board.match-board,
+.match-take .match-board {
+  min-height: 0 !important;
+  row-gap: 0 !important;
+}
+.match-ref .m-dot {
+  width: 12px !important;
+  height: 12px !important;
+  min-width: 12px !important;
+}

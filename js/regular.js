@@ -806,13 +806,11 @@ const Regular = {
     const correct = Array.isArray(q.correct) ? q.correct : left.map((_, i) => i);
     const leftRows = left.map((t, i) => `
       <div class="match-cfg-row" data-side="left" data-i="${i}">
-        <span class="match-dot">●</span>
         <input class="form-control" data-match-left="${index}:${i}" value="${escapeHtml(t)}" placeholder="Column A item ${i + 1}" />
         <button type="button" class="btn btn-sm btn-ghost" data-match-del-left="${index}:${i}">×</button>
       </div>`).join('');
     const rightRows = right.map((t, i) => `
       <div class="match-cfg-row" data-side="right" data-i="${i}">
-        <span class="match-dot">●</span>
         <input class="form-control" data-match-right="${index}:${i}" value="${escapeHtml(t)}" placeholder="Column B item ${i + 1}" />
         <button type="button" class="btn btn-sm btn-ghost" data-match-del-right="${index}:${i}">×</button>
       </div>`).join('');
