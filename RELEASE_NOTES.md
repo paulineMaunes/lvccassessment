@@ -623,3 +623,6 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Match: wider columns, restored gap between A/B nodes, less cramped scroll
 - Builder: sticky Undo/Redo/Cancel/Save/Publish bar
 - Retake: fresh / editable previous answers / lock previous answers
+
+## v1.5.71
+- Match student view: board 90vw wide; large center gap between Column A and B nodes; text uses full column width; no cramped column scrollbars
