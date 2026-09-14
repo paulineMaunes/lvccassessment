@@ -1,11 +1,37 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.69
+ * v1.5.70
  */
 
 const App = {
 
   /** Public portal URL for links/QR in emails (set once in Settings or auto-detect) */
+  async applyRetakeOptions(examId, email, sessionPayload) {
+    try {
+      const id = examId + '_' + String(email || '').toLowerCase().replace(/[^a-z0-9]/gi, '_');
+      const snap = await window.db.collection('examRetakes').doc(id).get();
+      if (!snap.exists || !snap.data().allowed) return sessionPayload;
+      const r = snap.data();
+      sessionPayload.retakeMode = r.retakeMode || 'fresh';
+      sessionPayload.lockPreviousAnswers = !!r.lockPreviousAnswers;
+      if (r.carryAnswers && r.previousSessionId) {
+        const prev = await window.db.collection('sessions').doc(r.previousSessionId).get();
+        if (prev.exists) {
+          const pd = prev.data() || {};
+          sessionPayload.answers = pd.answers || {};
+          sessionPayload.code = pd.code || sessionPayload.code;
+          if (r.lockPreviousAnswers) {
+            sessionPayload.answersLocked = true;
+            sessionPayload.lockedAnswerKeys = Object.keys(pd.answers || {});
+          }
+        }
+      }
+      // consume one-time allow
+      await window.db.collection('examRetakes').doc(id).update({ allowed: false, consumedAt: firebase.firestore.FieldValue.serverTimestamp() }).catch(() => {});
+    } catch (e) { console.warn('retake options', e); }
+    return sessionPayload;
+  },
+
   async appendSessionChat(sessionId, from, text) {
     const entry = {
       id: 'm_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
@@ -273,7 +299,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.69</div>
+          <div class="app-version">Build v1.5.70</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -415,7 +441,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.69</div>
+              <div class="app-version">v1.5.70</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -1277,19 +1303,20 @@ const App = {
         </div>
         <div id="regular-fields" class="hidden">
           <div class="card-title">Question sections</div>
+          <div class="builder-sticky-bar" id="builder-sticky-bar">
+            <button type="button" class="btn btn-ghost" id="btn-builder-undo" title="Undo" onclick="App.undoBuilder()">↶ Undo</button>
+            <button type="button" class="btn btn-ghost" id="btn-builder-redo" title="Redo" onclick="App.redoBuilder()">↷ Redo</button>
+            <button type="button" class="btn btn-ghost" onclick="App.saveAutosave();App.showInstructorHome()">Cancel</button>
+            <button type="button" class="btn btn-ghost" id="draft-exam-btn">Save as Draft</button>
+            <button type="button" class="btn btn-primary" id="create-exam-btn">Publish</button>
+          </div>
           <div id="questions-builder" class="mt-2"></div>
         </div>
         <div class="modal-actions action-btns form-footer-actions form-footer-split">
           <div class="footer-left">
             <button class="btn btn-primary" id="add-question-footer-btn" type="button">Add Question</button>
           </div>
-          <div class="footer-right" style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center">
-            <button type="button" class="btn btn-ghost" id="btn-builder-undo" title="Undo" onclick="App.undoBuilder()">↶ Undo</button>
-            <button type="button" class="btn btn-ghost" id="btn-builder-redo" title="Redo" onclick="App.redoBuilder()">↷ Redo</button>
-            <button class="btn btn-ghost" onclick="App.saveAutosave();App.showInstructorHome()">Cancel</button>
-            <button class="btn btn-ghost" id="draft-exam-btn">Save as Draft</button>
-            <button class="btn btn-primary" id="create-exam-btn">Publish</button>
-          </div>
+          <div class="footer-right text-muted" style="font-size:0.85rem">Use sticky bar above for Undo / Save / Publish</div>
         </div>
       </div>
     `, 'exams');
@@ -6193,6 +6220,19 @@ const App = {
       const et = exam.examType || session.examType ||
         ((exam.questions && exam.questions.length) || (exam.sections && exam.sections.length) ? 'regular' : 'code');
       try {
+        if (session && session.examId && session.studentEmail) {
+          try {
+            session = await this.applyRetakeOptions(session.examId, session.studentEmail, session);
+            if (session.id && (session.answers || session.retakeMode)) {
+              await window.db.collection('sessions').doc(session.id).update({
+                answers: session.answers || {},
+                retakeMode: session.retakeMode || null,
+                lockPreviousAnswers: !!session.lockPreviousAnswers,
+                answersLocked: !!session.answersLocked
+              }).catch(() => {});
+            }
+          } catch (_) {}
+        }
         if (et === 'regular') {
           return await this.startRegularExam(session);
         }

@@ -617,3 +617,9 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Results: search-as-you-type; action buttons one row; View summary / Re-evaluate Points / Export PDF
 - Re-evaluate: Points field per question; sticky Save inside main content
 - Wrong responses red on results
+
+## v1.5.70
+- My Assessments filter: updates list only (no focus loss per keystroke)
+- Match: wider columns, restored gap between A/B nodes, less cramped scroll
+- Builder: sticky Undo/Redo/Cancel/Save/Publish bar
+- Retake: fresh / editable previous answers / lock previous answers

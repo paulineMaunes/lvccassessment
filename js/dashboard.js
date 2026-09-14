@@ -80,8 +80,15 @@ const Dashboard = {
         <input type="search" class="form-control assess-filter" placeholder="Filter assessments..."
           value="${escapeHtml(this._filter)}" oninput="Dashboard.setFilter(this.value)" />
       </div>
-      <div class="assess-list">`;
+      <div class="assess-list" id="assess-list-body">`;
 
+    html += this._buildAssessCardsHtml(list);
+    html += '</div>';
+    container.innerHTML = html;
+  },
+
+  _buildAssessCardsHtml(list) {
+    let html = '';
     if (!list.length) {
       html += `<div class="empty-state"><p>No assessments in ${this._tab === 'drafts' ? 'Drafts' : 'Published'}.</p>
         <button class="btn btn-primary mt-2" onclick="App.showCreateExam()">+ Create Assessment</button></div>`;
@@ -135,8 +142,7 @@ const Dashboard = {
           </div>`;
       });
     }
-    html += '</div>';
-    container.innerHTML = html;
+    return html;
   },
 
   setTab(tab) {
@@ -146,9 +152,28 @@ const Dashboard = {
   },
 
   setFilter(val) {
-    this._filter = val;
-    const c = document.getElementById('exams-container');
-    if (c) this._renderExamList(c);
+    this._filter = val == null ? '' : String(val);
+    const body = document.getElementById('assess-list-body');
+    if (!body) {
+      const c = document.getElementById('exams-container');
+      if (c) this._renderExamList(c);
+      return;
+    }
+    const exams = this._examList || [];
+    const q = (this._filter || '').toLowerCase();
+    const isDraft = (ex) => ex.status === 'draft' || (ex.active === false && !ex.endAt);
+    let list = exams.filter(ex => {
+      if (this._tab === 'drafts') return isDraft(ex) || ex.status === 'draft';
+      return !isDraft(ex) && ex.status !== 'draft';
+    });
+    if (q) {
+      list = list.filter(ex =>
+        (ex.title || '').toLowerCase().includes(q) ||
+        (ex.subject || '').toLowerCase().includes(q) ||
+        (ex.examType || '').toLowerCase().includes(q)
+      );
+    }
+    body.innerHTML = this._buildAssessCardsHtml(list);
   },
 
   async renderLiveDashboard(container, examId, proctorFilterIds = null) {
@@ -861,8 +886,28 @@ const Dashboard = {
   },
 
   async allowRetakeSession(sessionId, examId) {
-    const ok = await UI.confirm('Retake starts a FRESH attempt (previous answers kept in history but new session). Continue?', 'Retake');
-    if (!ok) return;
+    const mode = await new Promise((resolve) => {
+      const root = document.getElementById('ui-modal-root') || document.body;
+      const w = document.createElement('div');
+      w.className = 'modal-overlay ui-modal-overlay';
+      w.style.zIndex = '50000';
+      w.innerHTML = `<div class="modal ui-modal">
+        <h2>Allow retake</h2>
+        <p class="ui-modal-body">Choose how previous answers are handled:</p>
+        <div class="modal-actions" style="flex-direction:column;gap:0.5rem;align-items:stretch">
+          <button type="button" class="btn btn-primary" id="rt-fresh">Fresh attempt (clear answers)</button>
+          <button type="button" class="btn btn-ghost" id="rt-edit">Continue with previous answers (student can edit)</button>
+          <button type="button" class="btn btn-ghost" id="rt-lock">Continue with previous answers (locked — view only, then new work only if unlocked)</button>
+          <button type="button" class="btn btn-ghost" id="rt-cancel">Cancel</button>
+        </div>
+      </div>`;
+      root.appendChild(w);
+      w.querySelector('#rt-fresh').onclick = () => { w.remove(); resolve('fresh'); };
+      w.querySelector('#rt-edit').onclick = () => { w.remove(); resolve('edit'); };
+      w.querySelector('#rt-lock').onclick = () => { w.remove(); resolve('lock'); };
+      w.querySelector('#rt-cancel').onclick = () => { w.remove(); resolve(null); };
+    });
+    if (!mode) return;
     const old = await window.db.collection('sessions').doc(sessionId).get();
     const data = old.exists ? old.data() : {};
     await window.db.collection('sessions').doc(sessionId).update({
@@ -877,6 +922,9 @@ const Dashboard = {
         email,
         allowed: true,
         previousSessionId: sessionId,
+        retakeMode: mode, // fresh | edit | lock
+        lockPreviousAnswers: mode === 'lock',
+        carryAnswers: mode === 'edit' || mode === 'lock',
         createdAt: firebase.firestore.FieldValue.serverTimestamp()
       });
     }

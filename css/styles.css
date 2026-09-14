@@ -7547,3 +7547,110 @@ body.live-dashboard-active,
 [data-theme="dark"] .student-response.wrong {
   color: #f87171 !important;
 }
+
+/* v1.5.70 Match layout: wide columns, space between nodes, no cramped scroll */
+.match-take .match-board,
+.match-board.match-ref-board,
+.match-board {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) !important;
+  gap: 3.5rem !important;
+  column-gap: 3.5rem !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  margin: 0 auto !important;
+  padding: 0.5rem 1rem !important;
+  overflow: visible !important;
+  min-height: 0 !important;
+  position: relative !important;
+}
+.match-col,
+.match-col-a,
+.match-col-b {
+  overflow: visible !important;
+  overflow-y: visible !important;
+  max-height: none !important;
+  gap: 0.65rem !important;
+  justify-content: flex-start !important;
+}
+.match-item,
+.match-item.match-left,
+.match-item.match-right {
+  white-space: normal !important;
+  overflow: visible !important;
+  max-width: 100%;
+  gap: 0.75rem !important;
+  padding: 0.35rem 0.25rem !important;
+}
+.match-item.match-left {
+  display: flex !important;
+  flex-direction: row !important;
+  justify-content: flex-end !important;
+  text-align: right !important;
+}
+.match-item.match-left .match-label {
+  text-align: right !important;
+  flex: 1 1 auto;
+  white-space: nowrap !important;
+  overflow: visible !important;
+  font-size: clamp(0.85rem, 1.5vw, 1.05rem);
+}
+.match-item.match-right {
+  display: flex !important;
+  flex-direction: row !important;
+  justify-content: flex-start !important;
+  text-align: left !important;
+}
+.match-item.match-right .match-label {
+  text-align: left !important;
+  flex: 1 1 auto;
+  white-space: normal !important;
+  line-height: 1.35;
+  font-size: clamp(0.85rem, 1.5vw, 1.05rem);
+}
+/* Nodes: more horizontal separation via column gap; keep nodes mid */
+.match-node {
+  flex-shrink: 0 !important;
+  margin: 0 0.25rem !important;
+}
+.match-lines,
+svg.match-lines {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  pointer-events: none !important;
+  overflow: visible !important;
+}
+/* Desktop only scroll if many items — soft max height with padding */
+@media (min-width: 901px) {
+  .match-take {
+    overflow: visible !important;
+  }
+  .match-board {
+    max-height: none !important;
+  }
+}
+@media (max-width: 900px) {
+  .match-board.match-desk-only { display: none !important; }
+  .match-mobile-alt { display: block !important; }
+}
+
+/* Builder sticky toolbar — main content only */
+.builder-sticky-bar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: var(--card-bg, #fff);
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  padding: 0.65rem 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0 0 0.75rem 0;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+[data-theme="dark"] .builder-sticky-bar {
+  background: var(--menu-bg, #020C12);
+}
