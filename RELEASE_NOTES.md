@@ -609,3 +609,11 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Mobile: MC/long text wraps, no cut-off; complete-code readable; categorize images 80%
 - Match: wider columns; points all vs per match
 - Section test: no fullscreen; table fill scroll to new row
+
+## v1.5.69
+- Live: single Back at top; right panel full height; no page scroll
+- Builder: preserve focus/caret on re-render (fixes per-character click)
+- Match: live answer-key labels as Column A/B typed (no full re-render)
+- Results: search-as-you-type; action buttons one row; View summary / Re-evaluate Points / Export PDF
+- Re-evaluate: Points field per question; sticky Save inside main content
+- Wrong responses red on results

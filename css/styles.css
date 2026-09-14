@@ -7449,3 +7449,101 @@ textarea[id*="reply"] {
   background: var(--page-bg, #fff);
   border-radius: 12px;
 }
+
+/* v1.5.69 live full panel, results buttons, reeval, wrong answers */
+body.live-dashboard-active,
+.live-dashboard-wrap {
+  overflow: hidden !important;
+  height: 100svh;
+}
+.live-layout.live-3panel {
+  height: calc(100svh - 8rem) !important;
+  max-height: calc(100svh - 8rem) !important;
+  overflow: hidden !important;
+  display: grid !important;
+  grid-template-columns: 1fr minmax(280px, 22rem);
+  gap: 0.75rem;
+}
+.live-layout .live-main {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.live-layout .live-grid {
+  flex: 1;
+  overflow-y: auto !important;
+  min-height: 0;
+}
+.live-right-panel.integrity-panel-fixed {
+  height: 100% !important;
+  max-height: 100% !important;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.reeval-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 15;
+  background: var(--card-bg, #fff);
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+  max-width: 100%;
+  margin-left: 0;
+}
+.main-content .reeval-toolbar {
+  /* stay inside main column, not over sidebar */
+  left: auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+.reeval-points-wrap {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--border);
+}
+.table-results-full .action-btns {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  gap: 0.35rem;
+  align-items: center;
+  justify-content: flex-end;
+}
+.table-results-full .action-btns .btn {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+@media (min-width: 1100px) {
+  .table-results-full { width: 100%; }
+  .table-results-full td.action-btns,
+  .table-results-full .action-btns {
+    min-width: 280px;
+  }
+}
+/* Wrong student response */
+.hist-ans.ans-wrong,
+.result-wrong,
+.student-response.wrong,
+.qa-response.wrong {
+  color: #dc2626 !important;
+  font-weight: 600;
+}
+.hist-ans.ans-correct,
+.result-correct,
+.student-response.correct {
+  color: #0f172a !important;
+}
+[data-theme="dark"] .hist-ans.ans-correct,
+[data-theme="dark"] .student-response.correct {
+  color: #e2e8f0 !important;
+}
+[data-theme="dark"] .hist-ans.ans-wrong,
+[data-theme="dark"] .student-response.wrong {
+  color: #f87171 !important;
+}

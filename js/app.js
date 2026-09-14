@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.68
+ * v1.5.69
  */
 
 const App = {
@@ -162,6 +162,11 @@ const App = {
     });
   },
 
+  responseClass(isCorrect) {
+    if (isCorrect === true) return 'ans-correct';
+    if (isCorrect === false) return 'ans-wrong';
+    return '';
+  },
   shouldHideStudentResult(session) {
     if (!session) return true;
     if (session.status === 'active') return true;
@@ -268,7 +273,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.68</div>
+          <div class="app-version">Build v1.5.69</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -410,7 +415,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.68</div>
+              <div class="app-version">v1.5.69</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -1377,6 +1382,28 @@ const App = {
     const renderBuilder = function renderBuilder() {
       window._renderAssessmentBuilder = renderBuilder;
       window._lvccRenderBuilder = renderBuilder;
+      // Preserve focus so typing is not interrupted by full re-renders
+      let focusRestore = null;
+      try {
+        const ae = document.activeElement;
+        if (ae && box.contains(ae) && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) {
+          const path = [];
+          if (ae.getAttribute('data-prompt') != null) path.push(['data-prompt', ae.getAttribute('data-prompt')]);
+          else if (ae.getAttribute('data-opt-text') != null) path.push(['data-opt-text', ae.getAttribute('data-opt-text')]);
+          else if (ae.getAttribute('data-match-left') != null) path.push(['data-match-left', ae.getAttribute('data-match-left')]);
+          else if (ae.getAttribute('data-match-right') != null) path.push(['data-match-right', ae.getAttribute('data-match-right')]);
+          else if (ae.getAttribute('data-cc-code') != null) path.push(['data-cc-code', ae.getAttribute('data-cc-code')]);
+          else if (ae.getAttribute('data-tf-cell') != null) path.push(['data-tf-cell', ae.getAttribute('data-tf-cell')]);
+          else if (ae.getAttribute('data-tf-merged') != null) path.push(['data-tf-merged', ae.getAttribute('data-tf-merged')]);
+          else if (ae.id) path.push(['id', ae.id]);
+          focusRestore = {
+            path,
+            start: ae.selectionStart,
+            end: ae.selectionEnd,
+            tag: ae.tagName
+          };
+        }
+      } catch (_) {}
       try { App.pushBuilderHistory(); } catch (_) {}
       const box = document.getElementById('questions-builder');
       if (!box) return;
@@ -1468,6 +1495,20 @@ const App = {
           try { App.openSectionTestPreview(si); } catch (err) { console.error(err); }
         };
       });
+      // restore caret after full rebuild
+      if (focusRestore && focusRestore.path && focusRestore.path.length) {
+        try {
+          const [attr, val] = focusRestore.path[0];
+          const el = box.querySelector(`[${attr}="${CSS.escape ? CSS.escape(val) : val}"]`) || box.querySelector(`[${attr}="${val}"]`);
+          if (el) {
+            el.focus();
+            if (typeof focusRestore.start === 'number' && el.setSelectionRange) {
+              try { el.setSelectionRange(focusRestore.start, focusRestore.end); } catch (_) {}
+            }
+          }
+        } catch (_) {}
+        focusRestore = null;
+      } /* focus-restore-end */
       box.querySelectorAll('[data-del-sec]').forEach(el => {
         el.onclick = async () => {
           if (!(await UI.confirm('Remove this entire section and its questions?', 'Remove section'))) return;
@@ -1481,14 +1522,23 @@ const App = {
           const [gi, i] = el.dataset.matchLeft.split(':').map(Number);
           const q = (window._builderQuestions || [])[gi];
           if (!q) return; q.left = q.left || []; q.left[i] = el.value;
-          // Live-update answer key label for this Column A item
+          // Live-update answer key label (Column A text) without full re-render
           const sel = box.querySelector(`[data-match-key="${gi}:${i}"]`);
           const lab = sel && sel.closest('label');
           if (lab && sel) {
             const txt = (el.value || '').trim() || ('A' + (i + 1));
-            lab.innerHTML = '';
-            lab.appendChild(document.createTextNode(txt + ' → '));
-            lab.appendChild(sel);
+            // Update only the text node before the select — keep focus on Column A input
+            const first = lab.childNodes[0];
+            if (first && first.nodeType === 3) first.textContent = txt + ' → ';
+            else {
+              lab.insertBefore(document.createTextNode(txt + ' → '), sel);
+              // remove extra text nodes except the one we need
+              [...lab.childNodes].forEach(n => {
+                if (n !== sel && n.nodeType === 3 && n !== lab.childNodes[0]) n.remove();
+              });
+              if (lab.childNodes[0] && lab.childNodes[0].nodeType === 3)
+                lab.childNodes[0].textContent = txt + ' → ';
+            }
           }
         };
       });
@@ -1497,6 +1547,12 @@ const App = {
           const [gi, i] = el.dataset.matchRight.split(':').map(Number);
           const q = (window._builderQuestions || [])[gi];
           if (!q) return; q.right = q.right || []; q.right[i] = el.value;
+          // Update all answer-key dropdown option labels for this B index
+          const txt = (el.value || '').trim() || ('B' + (i + 1));
+          box.querySelectorAll(`select[data-match-key^="${gi}:"]`).forEach(sel => {
+            const opt = sel.querySelector(`option[value="${i}"]`);
+            if (opt) opt.textContent = txt;
+          });
         };
       });
       box.querySelectorAll('[data-match-key]').forEach(el => {
@@ -2499,21 +2555,6 @@ const App = {
             q.points = q.pointsPerItem * ((q.left || []).length || 1);
             const tot = box.querySelector(`[data-points="${gi}"]`);
             if (tot) tot.value = q.points;
-          }
-        };
-      });
-      // Auto-sync match answer key labels when column A changes
-      box.querySelectorAll('[data-match-left]').forEach(el => {
-        el.oninput = () => {
-          const parts = el.dataset.matchLeft.split(':');
-          const gi = Number(parts[0]); const i = Number(parts[1]);
-          const q = (window._builderQuestions || [])[gi];
-          if (q && q.left) {
-            q.left[i] = el.value;
-            // update any answer-key display that shows A labels
-            box.querySelectorAll(`[data-match-key-label="${gi}:${i}"]`).forEach(lab => {
-              lab.textContent = el.value || ('A' + (i + 1));
-            });
           }
         };
       });
@@ -4009,13 +4050,7 @@ const App = {
   },
 
   openLiveDashboard(examId) {
-    this.renderShell(`
-      <div class="card-header page-header-responsive">
-        <h2 class="page-title">Live dashboard</h2>
-        <button class="btn btn-ghost" onclick="App.showInstructorHome()">Back</button>
-      </div>
-      <div id="live-container"></div>
-    `, 'exams');
+    this.renderShell(`<div id="live-container" class="live-dashboard-wrap"></div>`, 'exams');
     const el = document.getElementById('live-container');
     if (!el) { UI.alert('Live container missing.', 'Error'); return; }
     try {
@@ -7874,29 +7909,28 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
   async reEvaluateSession(sessionId, examId) {
     try {
       await this.showStudentAttempt(sessionId);
-      // Enable inline score edits after render
       setTimeout(() => {
-        const root = document.getElementById('app');
+        const root = document.getElementById('app') || document.querySelector('.main-content');
         if (!root) return;
         if (root.querySelector('.reeval-toolbar')) return;
         const bar = document.createElement('div');
         bar.className = 'reeval-toolbar';
-        bar.style.cssText = 'position:sticky;top:0;z-index:20;background:var(--card-bg,#fff);padding:0.75rem;border-bottom:1px solid var(--border);display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center';
-        bar.innerHTML = '<strong>Re-evaluate mode</strong><span class="text-muted">Edit points below, then Save</span><button type="button" class="btn btn-primary" id="reeval-save">Save scores</button><button type="button" class="btn btn-ghost" id="reeval-close">Close</button>';
-        root.insertBefore(bar, root.firstChild);
-        root.querySelectorAll('[data-item-points], .hist-points, .result-points').forEach(el => {
-          const v = el.textContent || el.value || '0';
-          const inp = document.createElement('input');
-          inp.type = 'number';
-          inp.step = '0.5';
-          inp.className = 'form-control reeval-point';
-          inp.style.width = '72px';
-          inp.dataset.qid = el.getAttribute('data-qid') || el.dataset.qid || '';
-          inp.value = parseFloat(String(v).replace(/[^0-9.-]/g, '')) || 0;
-          el.replaceWith(inp);
+        bar.innerHTML = '<strong>Re-evaluate mode</strong><span class="text-muted">Edit Points per question, then Save</span><button type="button" class="btn btn-primary" id="reeval-save">Save scores</button><button type="button" class="btn btn-ghost" id="reeval-close">Close</button>';
+        const main = document.querySelector('.main-content') || root;
+        main.insertBefore(bar, main.firstChild);
+        // Add Points column/input on each question card / result row
+        main.querySelectorAll('.hist-q-card, .result-q-card, .attempt-q, [data-result-qid], .qa-card').forEach((card, idx) => {
+          if (card.querySelector('.reeval-point')) return;
+          const qid = card.getAttribute('data-result-qid') || card.getAttribute('data-qid') || ('q' + idx);
+          let pts = 0;
+          const existing = card.querySelector('.hist-points, .result-points, [data-item-points]');
+          if (existing) pts = parseFloat(String(existing.textContent).replace(/[^0-9.-]/g, '')) || 0;
+          const wrap = document.createElement('div');
+          wrap.className = 'reeval-points-wrap';
+          wrap.innerHTML = `<label class="reeval-points-label">Points <input type="number" step="0.5" class="form-control reeval-point" data-qid="${qid}" value="${pts}" style="width:80px;display:inline-block"/></label>`;
+          card.appendChild(wrap);
         });
-        // If no point fields, allow editing total
-        if (!root.querySelector('.reeval-point')) {
+        if (!main.querySelector('.reeval-point')) {
           const total = document.createElement('label');
           total.innerHTML = ' Total score <input type="number" step="0.5" class="form-control reeval-total" style="width:100px;display:inline-block" />';
           bar.appendChild(total);
@@ -7906,7 +7940,7 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
           try {
             const points = {};
             let sum = 0;
-            root.querySelectorAll('.reeval-point').forEach(inp => {
+            main.querySelectorAll('.reeval-point').forEach(inp => {
               const p = Number(inp.value) || 0;
               sum += p;
               if (inp.dataset.qid) points[inp.dataset.qid] = p;
@@ -8012,7 +8046,8 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
         </div>
       </div>
       <div id="results-stats" class="stats-grid">Loading stats...</div>
-      <div id="results-table" class="mt-2">Loading...</div>
+      <input type="search" id="results-student-filter" class="form-control" placeholder="Search student name or email…" style="max-width:420px;margin:0.75rem 0" />
+      <div id="results-table" class="mt-2 results-table-full">Loading...</div>
     `, 'exams');
 
     const sessionsSnap = await window.db.collection('sessions').where('examId', '==', examId).get();
@@ -8143,6 +8178,16 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
           </td></tr>`;
       }).join('')}</tbody></table></div>`;
 
+    const rf = document.getElementById('results-student-filter');
+    if (rf) {
+      rf.oninput = () => {
+        const q = (rf.value || '').toLowerCase().trim();
+        document.querySelectorAll('#results-table tbody tr').forEach(tr => {
+          const t = (tr.textContent || '').toLowerCase();
+          tr.style.display = !q || t.includes(q) ? '' : 'none';
+        });
+      };
+    } /* resultsFilterBound */
     document.getElementById('btn-export-xlsx').onclick = () => {
       const rows = [['Name','Email','Status','Score','Max','Percent']];
       sessions.forEach(s => {

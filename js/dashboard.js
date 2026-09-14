@@ -169,9 +169,12 @@ const Dashboard = {
     const isProctor = !!proctorFilterIds;
 
     container.innerHTML = `
-      <div class="card-header page-header-responsive">
+      <div class="card-header page-header-responsive live-header-bar">
         <div>
-          <h2 class="page-title">Live — ${escapeHtml(exam.title)}</h2>
+          <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap">
+            <button type="button" class="btn btn-ghost btn-sm" id="live-back-top" onclick="App.showInstructorHome ? App.showInstructorHome() : App.showDashboard()">← Back</button>
+            <h2 class="page-title" style="margin:0">Live — ${escapeHtml(exam.title)}</h2>
+          </div>
           <p class="page-subtitle">
             ${exam.examType === 'regular' ? 'Regular' : 'Code'} assessment
             · ${new Date(startAt).toLocaleString()} → ${new Date(endAt).toLocaleString()}
@@ -188,7 +191,6 @@ const Dashboard = {
           </div>
           ${!isProctor ? `<button class="btn btn-primary" id="btn-extend-all">⏱ Extend all</button>` : ''}
           ${!isProctor ? `<button class="btn btn-danger" id="btn-end-all">End all assessments</button>` : ''}
-          <button class="btn btn-ghost" onclick="App.showInstructorHome ? App.showInstructorHome() : App.showDashboard()">← Back</button>
         </div>
       </div>
       <div id="integrity-modal-root"></div>
