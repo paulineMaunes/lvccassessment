@@ -216,6 +216,7 @@ const Dashboard = {
           </div>
           ${!isProctor ? `<button class="btn btn-primary" id="btn-extend-all">⏱ Extend all</button>` : ''}
           ${!isProctor ? `<button class="btn btn-danger" id="btn-end-all">End all assessments</button>` : ''}
+          ${!isProctor ? `<button type="button" class="btn btn-primary" id="live-blast-msg" title="Message all active students">Blast message</button>` : ''}
         </div>
       </div>
       <div id="integrity-modal-root"></div>
@@ -256,6 +257,32 @@ const Dashboard = {
     const extBtn = document.getElementById('btn-extend-all');
     if (extBtn) extBtn.onclick = () => this.promptExtendAll(examId);
     const endAllBtn = document.getElementById('btn-end-all');
+    const blastBtn = document.getElementById('live-blast-msg');
+    if (blastBtn) {
+      blastBtn.onclick = async () => {
+        const msg = await UI.prompt('Blast message to ALL active students:', '', 'Blast message', 'Type message for every student…');
+        if (msg == null) return;
+        const text = String(msg).trim();
+        if (!text) { await UI.alert('Please type a message.', 'Empty'); return; }
+        try {
+          const active = (this.sessionsCache || []).filter(s => s.status === 'active' && !String(s.id).startsWith('test_'));
+          if (!active.length) { await UI.alert('No active students.', 'Blast message'); return; }
+          const entry = { id: 'm_' + Date.now(), from: 'instructor', text, at: Date.now(), readByInstructor: true, blast: true };
+          await Promise.all(active.map(s => window.db.collection('sessions').doc(s.id).update({
+            lastInstructorMessage: text,
+            instructorReply: text,
+            lastInstructorMessageAt: firebase.firestore.FieldValue.serverTimestamp(),
+            instructorReplyAt: firebase.firestore.FieldValue.serverTimestamp(),
+            chatPing: Date.now(),
+            chatHistory: firebase.firestore.FieldValue.arrayUnion(entry)
+          }).catch(() => {})));
+          await UI.alert('Sent to ' + active.length + ' student(s).', 'Blast message');
+        } catch (e) {
+          await UI.alert(e.message || String(e), 'Blast failed');
+        }
+      };
+    }
+
     if (endAllBtn) endAllBtn.onclick = () => this.endAllAssessments(examId);
 
     document.getElementById('session-screen-filter').oninput = (e) => {

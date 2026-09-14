@@ -7910,3 +7910,71 @@ svg.match-lines {
   height: 12px !important;
   min-width: 12px !important;
 }
+
+/* v1.5.73 */
+.match-ref .m-row.m-left,
+.match-ref .m-row.m-right {
+  min-height: 2rem !important;
+  padding: 0.2rem 0 !important;
+  gap: 0.65rem !important;
+  align-items: center !important;
+}
+.match-ref .match-col,
+.match-ref .match-col-a,
+.match-ref .match-col-b {
+  gap: 0.55rem !important;
+  justify-content: center !important;
+}
+.match-ref .m-text {
+  line-height: 1.35 !important;
+  display: flex !important;
+  align-items: center !important;
+}
+.match-ref .m-dot {
+  align-self: center !important;
+}
+.hist-ans.ans-wrong {
+  color: #dc2626 !important;
+  font-weight: 600 !important;
+}
+.hist-ans.ans-correct {
+  color: #0f172a !important;
+}
+[data-theme="dark"] .hist-ans.ans-wrong { color: #f87171 !important; }
+[data-theme="dark"] .hist-ans.ans-correct { color: #e2e8f0 !important; }
+
+/* Result tables: prevent overlap with section headers */
+.result-special,
+.result-section {
+  margin-top: 1.25rem !important;
+  clear: both;
+  position: relative;
+  z-index: 1;
+}
+.tf-result-table {
+  margin-top: 0.75rem !important;
+  border-collapse: collapse !important;
+  width: 100% !important;
+  table-layout: auto !important;
+}
+.tf-result-table th,
+.tf-result-table td {
+  word-break: break-word !important;
+  overflow-wrap: anywhere !important;
+  white-space: normal !important;
+  padding: 0.4rem 0.5rem !important;
+  max-width: 12rem;
+}
+.tf-result-table th {
+  position: relative !important;
+  z-index: 0 !important;
+}
+.reeval-toolbar {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 40 !important;
+  background: var(--card-bg, #fff) !important;
+}
+.reeval-td input {
+  max-width: 100%;
+}

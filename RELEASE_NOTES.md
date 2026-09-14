@@ -632,3 +632,15 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Sticky builder bar fully opaque (no content showing through on scroll)
 - Match assessment: ~40% less vertical spacing between rows
 - Match config: single control per row (removed double bullets)
+
+## v1.5.73
+- Table fill config: scroll/focus to latest added row or column
+- Match take: +20% row spacing, vertical centering
+- Re-evaluate: Points + Comment columns on each question row
+- History + PDF: wrong student responses in red; table spacing to reduce overlap/clipping
+- Live: Blast message to all active students
+- Live edit: contentVersion listener soft-refreshes student exam without losing answers
+- Instructor View summary / Re-evaluate: no Back button
+- Browser Back/Forward navigation for main views
+- Reopen Previous: stats grid (name, total, correct, wrong, unattempted, accuracy, View Summary)
+- Email selected + Test Email + optional email before Allow continue

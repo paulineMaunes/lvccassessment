@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.72
+ * v1.5.73
  */
 
 const App = {
@@ -299,7 +299,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.72</div>
+          <div class="app-version">Build v1.5.73</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -441,7 +441,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.72</div>
+              <div class="app-version">v1.5.73</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -821,6 +821,8 @@ const App = {
   async showTeacherHome() { return this.showInstructorHome(); },
 
   async showInstructorHome() {
+    try { this.bindBrowserNav(); this.pushAppState('instructor-home'); } catch(_){}
+
     this.renderShell(`<div id="exams-container">Loading...</div>`, 'exams');
     await Dashboard.renderMyExams(document.getElementById('exams-container'));
   },
@@ -1224,6 +1226,10 @@ const App = {
       );
     }
 
+    if (status === 'published') {
+      payload.contentVersion = Date.now();
+      payload.active = payload.active !== false;
+    }
     await Exam.updateExam(examId, payload);
     window._editingExamId = examId;
     try { sessionStorage.setItem('lvcc_editing_exam', examId); } catch (_) {}
@@ -2539,7 +2545,10 @@ const App = {
           if ((q.cols || 3) >= 10) return;
           q.cols = (q.cols || 3) + 1;
           if (typeof Regular.ensureTableLayout === 'function') Regular.ensureTableLayout(q);
+          window._tfFocusGi = gi;
+          window._tfFocusMode = 'col';
           syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+          setTimeout(() => App._scrollTfFocus(gi, 'col'), 60);
         };
       });
       box.querySelectorAll('[data-tf-del-col]').forEach(el => {
@@ -2653,7 +2662,10 @@ const App = {
           if (q.tableRows.filter(r => r && r.type === 'data').length >= 20) return;
           q.tableRows.push({ type: 'data' });
           q.rows = q.tableRows.filter(r => r && r.type === 'data').length;
+          window._tfFocusGi = gi;
+          window._tfFocusMode = 'row';
           syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+          setTimeout(() => App._scrollTfFocus(gi, 'row'), 60);
         };
       });
       box.querySelectorAll('[data-tf-top-merged]').forEach(el => {
@@ -3517,27 +3529,42 @@ const App = {
         await UI.alert('No previous student sessions found for this assessment.', 'Reopen Previous');
         return;
       }
+      const examMeta = await Exam.getExam(examId);
       const selected = await new Promise((resolve) => {
         const root = document.getElementById('ui-modal-root') || document.body;
         const w = document.createElement('div');
         w.className = 'modal-overlay ui-modal-overlay';
         w.style.zIndex = '50000';
-        w.innerHTML = `<div class="modal ui-modal" style="max-width:560px;max-height:90vh;display:flex;flex-direction:column">
+        const rows = list.map(s => {
+          const st = this.computeAttemptStats(s, examMeta) || {};
+          const total = st.total != null ? st.total : '—';
+          const correct = st.correct != null ? st.correct : '—';
+          const wrong = st.incorrect != null ? st.incorrect : '—';
+          const un = st.unattempted != null ? st.unattempted : '—';
+          const acc = st.accuracy != null ? st.accuracy + '%' : '—';
+          return `<tr>
+            <td><input type="checkbox" class="rp-sid" value="${s.id}"/></td>
+            <td><strong>${escapeHtml(s.studentName || '—')}</strong><br/><span class="text-muted" style="font-size:0.78rem">${escapeHtml(s.studentEmail || '')}</span></td>
+            <td>${total}</td><td>${correct}</td><td>${wrong}</td><td>${un}</td><td>${acc}</td>
+            <td><button type="button" class="btn btn-sm btn-ghost rp-view" data-sid="${s.id}">View Summary</button></td>
+          </tr>`;
+        }).join('');
+        w.innerHTML = `<div class="modal ui-modal" style="max-width:min(960px,96vw);max-height:92vh;display:flex;flex-direction:column;width:96vw">
           <h2>Select students to continue</h2>
-          <p class="ui-modal-body">Checked students can rejoin with saved progress. Unchecked stay closed.</p>
-          <div style="overflow:auto;flex:1;max-height:50vh;text-align:left">
-            <label style="display:block;margin-bottom:0.35rem"><input type="checkbox" id="rp-all" /> Select all</label>
-            ${list.map(s => {
-              const sc = s.score != null && s.maxScore != null ? ` (${s.score}/${s.maxScore})` : '';
-              return `<label style="display:flex;gap:0.5rem;align-items:flex-start;padding:0.35rem 0;border-bottom:1px solid var(--border)">
-                <input type="checkbox" class="rp-sid" value="${s.id}" />
-                <span><strong>${escapeHtml(s.studentName || '')}</strong> ${escapeHtml(s.studentEmail || '')}<br/>
-                <span class="text-muted" style="font-size:0.8rem">${escapeHtml(s.status || '')}${escapeHtml(sc)}</span></span>
-              </label>`;
-            }).join('')}
+          <p class="ui-modal-body">Checked students can rejoin with saved progress. Optionally email them before continuing.</p>
+          <div style="overflow:auto;flex:1;max-height:55vh">
+            <table class="table" style="width:100%;font-size:0.88rem">
+              <thead><tr>
+                <th><input type="checkbox" id="rp-all" title="Select all"/></th>
+                <th>Full name</th><th>Total</th><th>Correct</th><th>Wrong</th><th>Unattempted</th><th>Accuracy</th><th></th>
+              </tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
           </div>
-          <div class="modal-actions">
+          <div class="modal-actions" style="flex-wrap:wrap;gap:0.5rem">
             <button type="button" class="btn btn-ghost" id="rp-cancel">Cancel</button>
+            <button type="button" class="btn btn-ghost" id="rp-test-email">Test Email</button>
+            <button type="button" class="btn btn-ghost" id="rp-email">Email selected</button>
             <button type="button" class="btn btn-primary" id="rp-go">Allow continue</button>
           </div>
         </div>`;
@@ -3545,7 +3572,78 @@ const App = {
         w.querySelector('#rp-all').onchange = (e) => {
           w.querySelectorAll('.rp-sid').forEach(c => { c.checked = e.target.checked; });
         };
+        w.querySelectorAll('.rp-view').forEach(btn => {
+          btn.onclick = async (e) => {
+            e.preventDefault(); e.stopPropagation();
+            const sid = btn.getAttribute('data-sid');
+            const overlay = document.createElement('div');
+            overlay.className = 'modal-overlay ui-modal-overlay';
+            overlay.style.cssText = 'z-index:60000;backdrop-filter:blur(4px);';
+            overlay.innerHTML = `<div class="modal ui-modal" style="width:96vw;max-width:1100px;height:100svh;max-height:100svh;display:flex;flex-direction:column;padding:0;position:relative">
+              <button type="button" id="rp-sum-x" style="position:absolute;top:0.5rem;right:0.75rem;z-index:2;border:none;background:transparent;font-size:1.5rem;cursor:pointer;line-height:1" title="Close">×</button>
+              <div id="rp-sum-body" style="flex:1;overflow:auto;padding:1rem">Loading…</div>
+            </div>`;
+            document.body.appendChild(overlay);
+            overlay.querySelector('#rp-sum-x').onclick = () => overlay.remove();
+            overlay.addEventListener('click', (ev) => { if (ev.target === overlay) overlay.remove(); });
+            try {
+              await this.showStudentAttempt(sid);
+              const main = document.querySelector('.main-content');
+              const clone = main ? main.cloneNode(true) : null;
+              // Restore previous shell under blur is hard; instead load attempt HTML into popup
+              const body = overlay.querySelector('#rp-sum-body');
+              if (clone) {
+                body.innerHTML = '';
+                body.appendChild(clone);
+              } else {
+                body.innerHTML = '<p>Could not load summary.</p>';
+              }
+            } catch (err) {
+              overlay.querySelector('#rp-sum-body').innerHTML = `<p>${escapeHtml(err.message || String(err))}</p>`;
+            }
+          };
+        });
         w.querySelector('#rp-cancel').onclick = () => { w.remove(); resolve(null); };
+        w.querySelector('#rp-test-email').onclick = async () => {
+          try {
+            const myEmail = (Auth.userProfile && Auth.userProfile.email) || (Auth.currentUser && Auth.currentUser.email);
+            if (!myEmail) { await UI.alert('No instructor email on file.', 'Test Email'); return; }
+            const tpl = await this.pickEmailTemplate();
+            if (!tpl) return;
+            await this.queueStudentEmail({
+              to: myEmail,
+              templateId: tpl,
+              examTitle: examMeta?.title || 'Assessment',
+              code: examMeta?.assessmentCode || '',
+              studentName: Auth.userProfile?.name || 'Instructor (test)'
+            });
+            await UI.alert('Test email queued to ' + myEmail + '. Check inbox (and spam).', 'Test Email');
+          } catch (err) {
+            await UI.alert(err.message || String(err), 'Test Email failed');
+          }
+        };
+        w.querySelector('#rp-email').onclick = async () => {
+          const ids = [...w.querySelectorAll('.rp-sid:checked')].map(c => c.value);
+          if (!ids.length) { await UI.alert('Select at least one student.', 'Email'); return; }
+          const tpl = await this.pickEmailTemplate();
+          if (!tpl) return;
+          let n = 0;
+          for (const id of ids) {
+            const s = list.find(x => x.id === id);
+            if (!s || !s.studentEmail) continue;
+            try {
+              await this.queueStudentEmail({
+                to: s.studentEmail,
+                templateId: tpl,
+                examTitle: examMeta?.title || 'Assessment',
+                code: examMeta?.assessmentCode || '',
+                studentName: s.studentName || s.studentEmail
+              });
+              n++;
+            } catch (_) {}
+          }
+          await UI.alert('Queued email for ' + n + ' student(s).', 'Email');
+        };
         w.querySelector('#rp-go').onclick = () => {
           const ids = [...w.querySelectorAll('.rp-sid:checked')].map(c => c.value);
           w.remove();
@@ -3553,6 +3651,26 @@ const App = {
         };
       });
       if (!selected || !selected.length) return;
+      // Optional email before continue
+      const sendMail = await UI.confirm('Send email to selected students before allowing continue?', 'Email before continue');
+      if (sendMail) {
+        const tpl = await this.pickEmailTemplate();
+        if (tpl) {
+          for (const id of selected) {
+            const s = list.find(x => x.id === id);
+            if (!s || !s.studentEmail) continue;
+            try {
+              await this.queueStudentEmail({
+                to: s.studentEmail,
+                templateId: tpl,
+                examTitle: examMeta?.title || 'Assessment',
+                code: examMeta?.assessmentCode || '',
+                studentName: s.studentName || s.studentEmail
+              });
+            } catch (_) {}
+          }
+        }
+      }
       const batch = window.db.batch();
       selected.forEach(id => {
         batch.update(window.db.collection('sessions').doc(id), {
@@ -3566,12 +3684,11 @@ const App = {
           reopenedAt: firebase.firestore.FieldValue.serverTimestamp()
         });
       });
-      // Reactivate exam window without new code
-      const exam = await Exam.getExam(examId);
+      const exam = examMeta || await Exam.getExam(examId);
       const endAt = exam?.endAt && exam.endAt > Date.now() ? exam.endAt : Date.now() + (exam?.durationMinutes || 60) * 60000;
       await window.db.collection('exams').doc(examId).update({
         active: true,
-        status: 'published',
+        status: 'published', contentVersion: Date.now(),
         endAt,
         startAt: Math.min(exam?.startAt || Date.now(), Date.now())
       });
@@ -4199,6 +4316,8 @@ const App = {
 
   // ---- Student ----
   showStudentHome() {
+    try { this.bindBrowserNav(); this.pushAppState('student-home'); } catch(_){}
+
     document.getElementById('student-chat-fab')?.remove();
     if (this._sessionWatchUnsub) { try { this._sessionWatchUnsub(); } catch(_){} this._sessionWatchUnsub = null; }
     this.renderShell(`
@@ -5377,11 +5496,17 @@ const App = {
           <table class="table result-equal-cols">
             <thead><tr><th>Question</th><th>Your response</th><th>Correct answer</th></tr></thead>
             <tbody>
-              ${sec.items.map(r => `<tr class="hist-q-row">
+              ${sec.items.map(r => {
+                const resp = String(r.response || '—').trim();
+                const corr = String(r.correct || '—').trim();
+                const wrong = resp !== '—' && corr !== '—' && resp.toLowerCase() !== corr.toLowerCase();
+                const rc = wrong ? 'ans-wrong' : (resp !== '—' && corr !== '—' ? 'ans-correct' : '');
+                return `<tr class="hist-q-row" data-result-qid="${escapeHtml(String((r.q&&r.q.id)||''))}">
                 <td data-label="Question" class="hist-cell-q"><div class="hist-value">${escapeHtml(r.prompt)}</div></td>
-                <td data-label="Response" class="hist-cell-r"><div class="hist-value hist-multiline">${escapeHtml(r.response).replace(/\n/g, '<br>')}</div></td>
-                <td data-label="Correct" class="hist-cell-c"><div class="hist-value hist-multiline">${escapeHtml(r.correct).replace(/\n/g, '<br>')}</div></td>
-              </tr>`).join('')}
+                <td data-label="Response" class="hist-cell-r"><div class="hist-value hist-multiline hist-ans ${rc}">${escapeHtml(r.response).replace(/\n/g, '<br>')}</div></td>
+                <td data-label="Correct" class="hist-cell-c"><div class="hist-value hist-multiline" style="color:var(--success,#16a34a)">${escapeHtml(r.correct).replace(/\n/g, '<br>')}</div></td>
+              </tr>`;
+              }).join('')}
             </tbody>
           </table>
         </div>
@@ -5392,7 +5517,7 @@ const App = {
         <h2 class="page-title">${escapeHtml(session.examTitle || exam?.title || 'Attempt')}</h2>
         <div class="action-btns">
           <button class="btn btn-ghost" id="export-attempt-pdf">Export PDF</button>
-          <button class="btn btn-ghost" onclick="App.showStudentHistory()">Back</button>
+          ${(Auth.userProfile && (Auth.userProfile.role === 'student')) ? `<button class="btn btn-ghost" onclick="App.showStudentHistory()">Back</button>` : ''}
         </div>
       </div>
       <div class="attempt-stats attempt-stats-row">
@@ -5788,7 +5913,10 @@ const App = {
             doc.setFontSize(8);
             doc.setTextColor(100);
             doc.text('Your response', 16, y); y += 4;
-            doc.setTextColor(15, 23, 42);
+            const _respS = String(r.response || '—').trim();
+            const _corrS = String(r.correct || '—').trim();
+            const _wrong = _respS !== '—' && _corrS !== '—' && _respS.toLowerCase() !== _corrS.toLowerCase();
+            doc.setTextColor(_wrong ? 220 : 15, _wrong ? 38 : 23, _wrong ? 38 : 42);
             doc.setFontSize(9);
             const respParts = this.pdfSafeText(String(r.response || '—').slice(0, 900)).split(/\n+/).filter(Boolean);
             respParts.forEach(line => {
@@ -5797,6 +5925,7 @@ const App = {
               doc.text(lines, 16, y);
               y += lines.length * 4.5 + 1;
             });
+            doc.setTextColor(15, 23, 42);
             y += 2;
             doc.setFontSize(8);
             doc.setTextColor(100);
@@ -5910,7 +6039,7 @@ const App = {
       }
       if (tableQs.length) {
         ensureSpace(40);
-        writeSection('Table fill', () => {
+        y += 6; writeSection('Table fill', () => {
           tableQs.forEach(q => {
             ensureSpace(28);
             doc.setFont(undefined, 'bold');
@@ -6234,7 +6363,23 @@ const App = {
           } catch (_) {}
         }
         if (et === 'regular') {
-          return await this.startRegularExam(session);
+          try {
+          this._lastContentVersion = null;
+          this._listenExamContentVersion(session.examId || (session.exam && session.exam.id), async (examData) => {
+            try {
+              // Soft refresh: update exam snapshot in memory; keep answers
+              if (window._currentExamTake) {
+                window._currentExamTake.questions = examData.questions || window._currentExamTake.questions;
+                window._currentExamTake.sections = examData.sections || window._currentExamTake.sections;
+                window._currentExamTake.contentVersion = examData.contentVersion;
+              }
+              if (typeof this._softRefreshTakeUI === 'function') this._softRefreshTakeUI();
+              else if (window.UI && UI.toast) UI.toast('Assessment updated by instructor. Your answers were kept.');
+              else console.info('Assessment content updated by instructor');
+            } catch (_) {}
+          });
+        } catch (_) {}
+        return await this.startRegularExam(session);
         }
         return await this.startCodeExam(session);
       } catch (inner) {
@@ -7958,17 +8103,25 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
         bar.innerHTML = '<strong>Re-evaluate mode</strong><span class="text-muted">Edit Points per question, then Save</span><button type="button" class="btn btn-primary" id="reeval-save">Save scores</button><button type="button" class="btn btn-ghost" id="reeval-close">Close</button>';
         const main = document.querySelector('.main-content') || root;
         main.insertBefore(bar, main.firstChild);
-        // Add Points column/input on each question card / result row
-        main.querySelectorAll('.hist-q-card, .result-q-card, .attempt-q, [data-result-qid], .qa-card').forEach((card, idx) => {
-          if (card.querySelector('.reeval-point')) return;
-          const qid = card.getAttribute('data-result-qid') || card.getAttribute('data-qid') || ('q' + idx);
-          let pts = 0;
-          const existing = card.querySelector('.hist-points, .result-points, [data-item-points]');
-          if (existing) pts = parseFloat(String(existing.textContent).replace(/[^0-9.-]/g, '')) || 0;
-          const wrap = document.createElement('div');
-          wrap.className = 'reeval-points-wrap';
-          wrap.innerHTML = `<label class="reeval-points-label">Points <input type="number" step="0.5" class="form-control reeval-point" data-qid="${qid}" value="${pts}" style="width:80px;display:inline-block"/></label>`;
-          card.appendChild(wrap);
+        // Inject Points + Comment columns into result tables
+        main.querySelectorAll('table.result-equal-cols').forEach(tbl => {
+          const thead = tbl.querySelector('thead tr');
+          if (thead && !thead.querySelector('.reeval-th')) {
+            thead.insertAdjacentHTML('beforeend', '<th class="reeval-th">Points</th><th class="reeval-th">Comment</th>');
+          }
+          tbl.querySelectorAll('tbody tr.hist-q-row').forEach((tr, idx) => {
+            if (tr.querySelector('.reeval-point')) return;
+            const qid = tr.getAttribute('data-result-qid') || ('q' + idx);
+            const respEl = tr.querySelector('.hist-ans, .hist-cell-r .hist-value');
+            const corrEl = tr.querySelector('.hist-cell-c .hist-value');
+            const resp = (respEl && respEl.textContent || '').trim();
+            const corr = (corrEl && corrEl.textContent || '').trim();
+            let defaultPts = 0;
+            if (resp && corr && resp !== '—' && resp.toLowerCase() === corr.toLowerCase()) defaultPts = 1;
+            tr.insertAdjacentHTML('beforeend',
+              `<td class="reeval-td"><input type="number" step="0.5" class="form-control reeval-point" data-qid="${qid}" value="${defaultPts}" style="width:72px"/></td>
+               <td class="reeval-td"><input type="text" class="form-control reeval-comment" data-qid="${qid}" placeholder="Comment" style="min-width:120px"/></td>`);
+          });
         });
         if (!main.querySelector('.reeval-point')) {
           const total = document.createElement('label');
@@ -7990,10 +8143,15 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
             const sess = await window.db.collection('sessions').doc(sessionId).get();
             const max = Number((sess.data() || {}).maxScore) || sum || 100;
             const percent = max > 0 ? Math.round((sum / max) * 1000) / 10 : 0;
+            const comments = {};
+            main.querySelectorAll('.reeval-comment').forEach(inp => {
+              if (inp.dataset.qid && inp.value) comments[inp.dataset.qid] = inp.value;
+            });
             await window.db.collection('sessions').doc(sessionId).update({
               score: sum,
               percent,
               itemPoints: points,
+              itemComments: comments,
               reEvaluatedAt: firebase.firestore.FieldValue.serverTimestamp(),
               reEvaluatedBy: Auth.currentUser && Auth.currentUser.uid
             });
