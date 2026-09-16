@@ -660,3 +660,14 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - PDF: long text wraps within page margins; table starts below full instruction (no cover)
 - Email: greets student first name only; LVCC signature block (Thanks be to God / Sincerely / title / motto / college / disclaimer)
 - Table fill config: scroll targets newest row via main-content scroll offset (not first row)
+
+## v1.5.76
+- System-limit email: Continue wording + unattempted count; LVCC logo in header; LVCC/DPS logos + Cinzel college name in signature; Georgia 11pt body
+- Reopen Previous: Allow continue → pick template → email + continue (removed separate Email selected)
+- Match/Categorize scoring: 1 point per correct pair/item by default (pointsMode each); section test shows point score
+- Submit stores score/maxScore from gradeAnswers (not 1-per-question only)
+- PDF: gray dividers between questions; wider wrap (175pt); table cells less truncated
+- Sticky bar no longer covers "Question sections" title
+- Re-evaluate: edit correct answer fields
+- Passage take: fallback to nested questions + passageHtml
+- MC/TF dynamic font size (short vs long text)

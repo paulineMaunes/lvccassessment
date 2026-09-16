@@ -8030,3 +8030,19 @@ svg.match-lines {
 .tf-result-table td.tf-blank-cell {
   position: relative;
 }
+
+/* v1.5.76 dynamic MC / TF text size */
+.take-mc-options .mc-opt, .take-tf-options .mc-opt, .mc-option, .tf-option, .option-card {
+  font-size: clamp(0.95rem, 0.55rem + 1.1vw, 1.35rem) !important;
+  line-height: 1.35 !important;
+}
+.take-q-prompt, #take-q-box .q-prompt, .take-question-text {
+  font-size: clamp(1.05rem, 0.7rem + 1.2vw, 1.55rem) !important;
+  line-height: 1.4 !important;
+}
+/* short text boost via JS class */
+.mc-opt.mc-short, .tf-option.mc-short { font-size: 1.4rem !important; }
+.mc-opt.mc-long, .tf-option.mc-long { font-size: 0.95rem !important; }
+
+.builder-sections-title { clear: both; position: relative; z-index: 1; padding-top: 0.25rem; }
+.builder-sticky-bar { margin-bottom: 0.5rem; }

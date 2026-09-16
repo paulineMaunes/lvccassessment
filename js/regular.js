@@ -1913,18 +1913,18 @@ const Regular = {
       let right = 0;
       items.forEach(it => {
         const studentCat = ans[it.id] ?? ans[it.name];
-        const expected = it.category ?? it.categoryId ?? it.answer;
+        const expected = it.category ?? it.categoryId ?? it.answer ?? it.catId;
         if (studentCat != null && expected != null && String(studentCat) === String(expected)) right++;
         else if (studentCat != null && expected != null && this.normAns(studentCat) === this.normAns(expected)) right++;
       });
-      if ((q.pointsMode || 'each') === 'each' || q.pointsPerItem != null) {
-        const per = Number(q.pointsPerItem) || 1;
-        const earned = right * per;
+      const per = Number(q.pointsPerItem) > 0 ? Number(q.pointsPerItem) : 1;
+      const mode = q.pointsMode || 'each';
+      if (mode === 'each' || q.pointsPerItem != null) {
         const max = items.length * per;
-        return { earned, max, ok: right === items.length };
+        return { earned: right * per, max, ok: right === items.length };
       }
-      const ok = right === items.length;
-      return { earned: ok ? pts : 0, max: pts, ok };
+      const maxPts = Number(q.points) > 0 ? Number(q.points) : items.length * per;
+      return { earned: right === items.length ? maxPts : 0, max: maxPts, ok: right === items.length };
     }
 
     // Match: answer map leftIndex -> rightIndex; correct is array of right indices
@@ -1935,19 +1935,19 @@ const Regular = {
       let right = 0;
       left.forEach((_, i) => {
         const student = ans[i] != null ? ans[i] : ans[String(i)];
-        if (student == null) return;
+        if (student == null || student === '') return;
         const expected = correct[i];
         if (Number(student) === Number(expected)) right++;
       });
-      const per = 1;
-      const max = left.length * per;
-      const earned = right * per;
-      // if points set, scale
-      if (q.points && left.length) {
-        const scale = pts / left.length;
-        return { earned: right * scale, max: pts, ok: right === left.length };
+      const per = Number(q.pointsPerItem) > 0 ? Number(q.pointsPerItem) : 1;
+      const mode = q.pointsMode || 'each';
+      if (mode === 'each') {
+        const max = left.length * per;
+        return { earned: right * per, max, ok: right === left.length && left.length > 0 };
       }
-      return { earned, max, ok: right === left.length };
+      // full points only if all correct
+      const maxPts = Number(q.points) > 0 ? Number(q.points) : left.length * per;
+      return { earned: right === left.length && left.length ? maxPts : 0, max: maxPts, ok: right === left.length && left.length > 0 };
     }
 
     // Table fill: cells map "r-c" -> value

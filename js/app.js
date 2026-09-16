@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.75
+ * v1.5.76
  */
 
 const App = {
@@ -72,9 +72,16 @@ const App = {
   EMAIL_TEMPLATES: {
     quota_retake: {
       id: 'quota_retake',
-      label: 'Retake — answers not saved (system limit)',
-      subject: (t) => `[LVCC] Retake required: ${t}`,
-      blurb: 'Your previous attempt may not have been fully recorded due to a system limit. Please retake the assessment so your score is accurate.'
+      label: 'Continue — answers not saved (system limit)',
+      subject: (t) => `[LVCC] Continue your assessment: ${t}`,
+      blurb: (ctx) => {
+        const n = ctx && ctx.unattempted != null ? Number(ctx.unattempted) : null;
+        const items = (n != null && !isNaN(n))
+          ? (n === 1 ? '1 item has not been recorded or remains unanswered'
+            : (n + ' items have not been recorded or remain unanswered'))
+          : 'some items may not have been recorded or remain unanswered';
+        return 'Due to a temporary system limit, ' + items + '. Continue your assessment with the link or code below so your progress is completed and your score is accurate.';
+      }
     },
     failed_retake: {
       id: 'failed_retake',
@@ -102,36 +109,50 @@ const App = {
     }
   },
 
-  buildAssessmentEmailHtml({ studentName, examTitle, code, blurb, portalUrl, instructorName, instructorEmail }) {
+  buildAssessmentEmailHtml({ studentName, examTitle, code, blurb, portalUrl, instructorName, instructorEmail, unattempted }) {
     const codeDisp = String(code || '').replace(/(\d{4})(\d{4})/, '$1-$2');
     const joinUrl = portalUrl + (portalUrl.includes('?') ? '&' : '/?') + 'code=' + encodeURIComponent(String(code || '').replace(/\D/g, ''));
     const qr = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(joinUrl);
     const firstName = String(studentName || 'Student').trim().split(/\s+/)[0] || 'Student';
     const fullName = instructorName || instructorEmail || 'Instructor';
+    const base = (portalUrl || '').replace(/\/$/, '');
+    const logoUrl = base + '/assets/lvcc-logo.png';
+    const sigLogosUrl = base + '/assets/lvcc-sig-logos.png';
+    let blurbText = blurb;
+    if (typeof blurb === 'function') {
+      try { blurbText = blurb({ unattempted: unattempted, studentName: studentName, examTitle: examTitle }); }
+      catch (_) { blurbText = String(blurb); }
+    }
     return `
-<!DOCTYPE html><html><body style="font-family:Georgia,'Times New Roman',serif;line-height:1.55;color:#0f172a;background:#f8fafc;padding:24px">
+<!DOCTYPE html><html><head>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&display=swap" rel="stylesheet">
+</head><body style="font-family:Georgia,'Times New Roman',serif;font-size:11pt;line-height:1.55;color:#0f172a;background:#f8fafc;padding:24px">
   <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:12px;padding:28px;border:1px solid #e2e8f0">
-    <h2 style="margin:0 0 8px;color:#1e3a5f;font-family:Segoe UI,Arial,sans-serif">LVCC Assessment Portal</h2>
-    <p style="color:#64748b;margin:0 0 20px;font-family:Segoe UI,Arial,sans-serif">We live with honesty, truthfulness, and moral courage.</p>
-    <p>Hello ${this._esc(firstName)},</p>
-    <p>${this._esc(blurb)}</p>
-    <p><strong>Assessment:</strong> ${this._esc(examTitle || '')}</p>
-    <p style="font-size:1.25rem;font-family:Segoe UI,Arial,sans-serif"><strong>Code:</strong> <span style="letter-spacing:0.05em">${this._esc(codeDisp)}</span></p>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+      <img src="${this._esc(logoUrl)}" width="48" height="48" alt="LVCC" style="border-radius:8px;object-fit:contain"/>
+      <h2 style="margin:0;color:#1e3a5f;font-family:Segoe UI,Arial,sans-serif;font-size:1.35rem">LVCC Assessment Portal</h2>
+    </div>
+    <p style="color:#64748b;margin:0 0 20px;font-family:Segoe UI,Arial,sans-serif;font-size:0.9rem">We live with honesty, truthfulness, and moral courage.</p>
+    <p style="font-family:Georgia,'Times New Roman',serif;font-size:11pt">Hello ${this._esc(firstName)},</p>
+    <p style="font-family:Georgia,'Times New Roman',serif;font-size:11pt">${this._esc(blurbText)}</p>
+    <p style="font-family:Georgia,'Times New Roman',serif;font-size:11pt"><strong>Assessment:</strong> ${this._esc(examTitle || '')}</p>
+    <p style="font-size:1.2rem;font-family:Segoe UI,Arial,sans-serif"><strong>Code:</strong> <span style="letter-spacing:0.05em">${this._esc(codeDisp)}</span></p>
     <p style="margin:28px 0">
-      <a href="${this._esc(joinUrl)}" style="background:#387EC3;color:#fff;padding:14px 22px;text-decoration:none;border-radius:8px;font-weight:600;display:inline-block;font-family:Segoe UI,Arial,sans-serif">Open assessment</a>
+      <a href="${this._esc(joinUrl)}" style="background:#387EC3;color:#fff;padding:14px 22px;text-decoration:none;border-radius:8px;font-weight:600;display:inline-block;font-family:Segoe UI,Arial,sans-serif">Continue assessment</a>
     </p>
     <p style="color:#64748b;font-size:0.9rem">Or scan this QR code:</p>
     <p><img src="${qr}" width="180" height="180" alt="QR code" /></p>
     <hr style="border:none;border-top:1px solid #e2e8f0;margin:28px 0 20px" />
-    <div style="font-size:0.95rem;color:#0f172a;line-height:1.6">
+    <div style="font-family:Georgia,'Times New Roman',serif;font-size:11pt;color:#0f172a;line-height:1.6">
       <p style="font-style:italic;margin:0 0 0.75rem">Thanks be to God.</p>
       <p style="font-style:italic;margin:0 0 0.35rem">Sincerely,</p>
       <p style="margin:0.5rem 0 0.15rem"><strong>${this._esc(fullName)}</strong></p>
       <p style="font-style:italic;margin:0 0 0.75rem">Higher Education Instructor</p>
       <p style="font-style:italic;margin:0 0 0.75rem">"Wisdom Based on the Truth is Priceless."</p>
-      <p style="margin:0 0 0.15rem"><strong>LA VERDAD CHRISTIAN COLLEGE, INC.</strong></p>
+      <p style="margin:0.5rem 0 0.35rem"><img src="${this._esc(sigLogosUrl)}" alt="LVCC / DPS / DPO" style="max-width:220px;height:auto;display:block"/></p>
+      <p style="margin:0 0 0.15rem;font-family:Cinzel,'Palatino Linotype',Georgia,serif;font-weight:700;font-size:12pt;letter-spacing:0.04em">LA VERDAD CHRISTIAN COLLEGE, INC.</p>
       <p style="font-style:italic;margin:0 0 1rem">Mc Arthur Highway, Sampaloc, Apalit, Pampanga</p>
-      <p style="font-size:0.78rem;color:#64748b;margin:0"><em><strong>Disclaimer:</strong> This communication may contain confidential or privileged information, and is intended solely for the individual or entity to whom it is originally addressed. Any disclosure, copying, dissemination, or any action taken in reliance on it by others, other than the intended recipient, is strictly prohibited. The opinions, conclusions, and statements expressed in this message are those of the sender and may not necessarily reflect the views of La Verdad Christian College, Inc.</em></p>
+      <p style="font-size:9pt;color:#64748b;margin:0"><em><strong>Disclaimer:</strong> This communication may contain confidential or privileged information, and is intended solely for the individual or entity to whom it is originally addressed. Any disclosure, copying, dissemination, or any action taken in reliance on it by others, other than the intended recipient, is strictly prohibited. The opinions, conclusions, and statements expressed in this message are those of the sender and may not necessarily reflect the views of La Verdad Christian College, Inc.</em></p>
     </div>
   </div>
 </body></html>`;
@@ -145,13 +166,13 @@ const App = {
    * Queue email via Firestore `mail` collection (Firebase Trigger Email extension).
    * From = instructor email. No custom assessmentportal@ mailbox required.
    */
-  async queueStudentEmail({ to, templateId, examTitle, code, studentName }) {
+  async queueStudentEmail({ to, templateId, examTitle, code, studentName, unattempted }) {
     const tpl = this.EMAIL_TEMPLATES[templateId] || this.EMAIL_TEMPLATES.instructor_retake;
     const instructorEmail = (Auth.userProfile && Auth.userProfile.email) || (Auth.currentUser && Auth.currentUser.email) || '';
     const instructorName = (Auth.userProfile && Auth.userProfile.name) || instructorEmail;
     const portalUrl = this.getPortalBaseUrl();
     const html = this.buildAssessmentEmailHtml({
-      studentName, examTitle, code, blurb: tpl.blurb, portalUrl, instructorName, instructorEmail
+      studentName, examTitle, code, blurb: tpl.blurb, portalUrl, instructorName, instructorEmail, unattempted
     });
     const subject = typeof tpl.subject === 'function' ? tpl.subject(examTitle || 'Assessment') : `[LVCC] ${examTitle || 'Assessment'}`;
     const doc = {
@@ -216,6 +237,17 @@ const App = {
         resolve(v);
       };
     });
+  },
+
+  applyDynamicChoiceFonts(root) {
+    try {
+      (root || document).querySelectorAll('.mc-opt, .tf-option, .option-card, .take-mc-options button, .mc-choice').forEach(el => {
+        const t = (el.textContent || '').trim();
+        el.classList.remove('mc-short', 'mc-long');
+        if (t.length <= 24) el.classList.add('mc-short');
+        else if (t.length >= 80) el.classList.add('mc-long');
+      });
+    } catch (_) {}
   },
 
   _scrollTfFocus(gi, mode) {
@@ -377,7 +409,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.75</div>
+          <div class="app-version">Build v1.5.76</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -519,7 +551,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.75</div>
+              <div class="app-version">v1.5.76</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -1386,7 +1418,6 @@ const App = {
           </div>
         </div>
         <div id="regular-fields" class="hidden">
-          <div class="card-title">Question sections</div>
           <div class="builder-sticky-bar" id="builder-sticky-bar">
             <button type="button" class="btn btn-ghost" id="btn-builder-undo" title="Undo" onclick="App.undoBuilder()">↶ Undo</button>
             <button type="button" class="btn btn-ghost" id="btn-builder-redo" title="Redo" onclick="App.redoBuilder()">↷ Redo</button>
@@ -1394,6 +1425,7 @@ const App = {
             <button type="button" class="btn btn-ghost" id="draft-exam-btn">Save as Draft</button>
             <button type="button" class="btn btn-primary" id="create-exam-btn">Publish</button>
           </div>
+          <div class="card-title builder-sections-title" style="margin-top:0.75rem;position:relative;z-index:1">Question sections</div>
           <div id="questions-builder" class="mt-2"></div>
         </div>
         <div class="modal-actions action-btns form-footer-actions form-footer-split">
@@ -3662,7 +3694,6 @@ const App = {
           <div class="modal-actions" style="flex-wrap:wrap;gap:0.5rem">
             <button type="button" class="btn btn-ghost" id="rp-cancel">Cancel</button>
             <button type="button" class="btn btn-ghost" id="rp-test-email">Test Email</button>
-            <button type="button" class="btn btn-ghost" id="rp-email">Email selected</button>
             <button type="button" class="btn btn-primary" id="rp-go">Allow continue</button>
           </div>
         </div>`;
@@ -3731,55 +3762,33 @@ const App = {
             await UI.alert(err.message || String(err), 'Test Email failed');
           }
         };
-        w.querySelector('#rp-email').onclick = async () => {
+        w.querySelector('#rp-go').onclick = async () => {
           const ids = [...w.querySelectorAll('.rp-sid:checked')].map(c => c.value);
-          if (!ids.length) { await UI.alert('Select at least one student.', 'Email'); return; }
+          if (!ids.length) { await UI.alert('Select at least one student.', 'Continue'); return; }
           const tpl = await this.pickEmailTemplate();
-          if (!tpl) return;
-          let n = 0;
+          if (!tpl) return; // cancelled template = cancel flow
           for (const id of ids) {
             const s = list.find(x => x.id === id);
             if (!s || !s.studentEmail) continue;
+            const un = s.unattempted != null ? s.unattempted : (s.stats && s.stats.unattempted);
             try {
               await this.queueStudentEmail({
                 to: s.studentEmail,
                 templateId: tpl,
                 examTitle: examMeta?.title || 'Assessment',
                 code: examMeta?.assessmentCode || '',
-                studentName: s.studentName || s.studentEmail
+                studentName: s.studentName || s.studentEmail,
+                unattempted: un
               });
-              n++;
-            } catch (_) {}
+            } catch (err) {
+              console.warn('email', err);
+            }
           }
-          await UI.alert('Queued email for ' + n + ' student(s).', 'Email');
-        };
-        w.querySelector('#rp-go').onclick = () => {
-          const ids = [...w.querySelectorAll('.rp-sid:checked')].map(c => c.value);
           w.remove();
           resolve(ids);
         };
       });
       if (!selected || !selected.length) return;
-      // Optional email before continue
-      const sendMail = await UI.confirm('Send email to selected students before allowing continue?', 'Email before continue');
-      if (sendMail) {
-        const tpl = await this.pickEmailTemplate();
-        if (tpl) {
-          for (const id of selected) {
-            const s = list.find(x => x.id === id);
-            if (!s || !s.studentEmail) continue;
-            try {
-              await this.queueStudentEmail({
-                to: s.studentEmail,
-                templateId: tpl,
-                examTitle: examMeta?.title || 'Assessment',
-                code: examMeta?.assessmentCode || '',
-                studentName: s.studentName || s.studentEmail
-              });
-            } catch (_) {}
-          }
-        }
-      }
       const batch = window.db.batch();
       selected.forEach(id => {
         batch.update(window.db.collection('sessions').doc(id), {
@@ -6030,7 +6039,7 @@ const App = {
         ensureSpace(Math.min(est, 80));
         writeSection(typeLabel[t] || t, () => {
           items.forEach(r => {
-            const promptLines = doc.splitTextToSize(this.pdfSafeText(String(r.prompt || 'Question').slice(0, 800)), 180);
+            const promptLines = doc.splitTextToSize(this.pdfSafeText(String(r.prompt || 'Question').slice(0, 1200)), 175);
             const respEst = 12 + Math.ceil(String(r.response || '').length / 90) * 5;
             const corrEst = 12 + Math.ceil(String(r.correct || '').length / 90) * 5;
             // Keep question + response + correct together when possible
@@ -6052,7 +6061,7 @@ const App = {
             const respParts = this.pdfSafeText(String(r.response || '—').slice(0, 900)).split(/\n+/).filter(Boolean);
             respParts.forEach(line => {
               ensureSpace(8);
-              const lines = doc.splitTextToSize(line, 180);
+              const lines = doc.splitTextToSize(line, 175);
               doc.text(lines, 16, y);
               y += lines.length * 4.5 + 1;
             });
@@ -6066,10 +6075,18 @@ const App = {
             const corrParts = this.pdfSafeText(String(r.correct || '—').slice(0, 900)).split(/\n+/).filter(Boolean);
             corrParts.forEach(line => {
               ensureSpace(8);
-              const lines = doc.splitTextToSize(line, 180);
+              const lines = doc.splitTextToSize(line, 175);
               doc.text(lines, 16, y);
               y += lines.length * 4.5 + 1;
             });
+            // light gray divider between questions
+            y += 4;
+            ensureSpace(6);
+            doc.setDrawColor(200, 200, 200);
+            doc.setLineWidth(0.3);
+            doc.line(16, y, 190, y);
+            y += 8;
+
             y += 6;
             doc.setTextColor(15, 23, 42);
           });
@@ -6176,11 +6193,11 @@ const App = {
             const headers = q.headers || [];
             const cells = q.cells || {};
             const resp = (session.answers || {})[q.id] || {};
-            const pageW = 182;
-            const startX = 14;
+            const pageW = 175;
+            const startX = 16;
             const colW = Math.min(pageW / cols, 60);
             // Instruction first — full wrap, then gap so table never covers it
-            const promptLines = doc.splitTextToSize(this.pdfSafeText(q.prompt || 'Table'), pageW);
+            const promptLines = doc.splitTextToSize(this.pdfSafeText(q.prompt || 'Table'), 175);
             ensureSpace(12 + promptLines.length * 5 + 14);
             doc.setFont(undefined, 'bold');
             doc.setFontSize(10);
@@ -6828,6 +6845,13 @@ const App = {
           sess = sess || session;
           sess.answers = answers || window._takeAnswers || {};
           const st = this.computeAttemptStats(sess, examMini);
+          let graded = { score: st.correct, maxScore: st.total };
+          try {
+            const qs = (examMini.sections || []).flatMap(s => s.questions || []);
+            if (window.Regular && Regular.gradeAnswers) graded = Regular.gradeAnswers(qs, sess.answers || {});
+          } catch (_) {}
+          const sc = Math.round((graded.score || 0) * 100) / 100;
+          const mx = Math.round((graded.maxScore || st.total || 0) * 100) / 100;
           panelInner.innerHTML = `
             <div class="card" style="max-width:720px;margin:2rem auto;padding:1.5rem">
               <h2 style="margin-top:0">Section test result</h2>
@@ -7275,14 +7299,16 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
           renderTake();
         };
         if (typeof Theme !== 'undefined') Theme.syncButtons();
+        this.applyDynamicChoiceFonts(document.getElementById('take-q-box'));
         return;
       }
 
       if (g.kind === 'passage') {
-        const list = g.questions && g.questions.length ? g.questions : [];
+        let list = g.questions && g.questions.length ? g.questions : [];
+        if (!list.length && g.passage && Array.isArray(g.passage.questions)) list = g.passage.questions;
         const tabs = (g.passage && g.passage.passages && g.passage.passages.length)
           ? g.passage.passages
-          : [{ title: 'Passage 1', html: (g.passage && (g.passage.passageHtml || g.passage.prompt)) || '' }];
+          : [{ title: 'Passage 1', html: (g.passage && (g.passage.passageHtml || g.passage.html || g.passage.prompt || g.passage.content)) || '' }];
         const activeTab = window._passageTab || 0;
         const tabBar = tabs.map((pp, i) =>
           `<button type="button" class="passage-tab ${i === activeTab ? 'active' : ''}" data-pass-tab="${i}">${escapeHtml(pp.title || ('Passage ' + (i + 1)))}</button>`
@@ -7739,12 +7765,19 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
         await Exam.updateSessionAnswers(session.id, answers || {});
         const exam = session.exam || await Exam.getExam(session.examId);
         const st = this.computeAttemptStats({ ...session, answers: answers || {} }, exam);
+        let graded = { score: st.correct, maxScore: st.total };
+        try {
+          const qs = exam ? (Regular.flattenQuestions(exam) || []) : (session.questionsSnapshot || []);
+          if (window.Regular && Regular.gradeAnswers) graded = Regular.gradeAnswers(qs, answers || {});
+        } catch (_) {}
         await window.db.collection('sessions').doc(session.id).update({
           totalQuestions: st.total,
           correctCount: st.correct,
           incorrectCount: st.incorrect,
           unattemptedCount: st.unattempted,
           accuracy: st.accuracy,
+          score: graded.score,
+          maxScore: graded.maxScore,
           questionsSnapshot: session.questionsSnapshot || (exam ? Regular.flattenQuestions(exam) : [])
         }).catch(() => {});
         await Exam.submitSession(session.id, reason === 'time-up' ? 'time-up' : 'manual');
@@ -7766,8 +7799,13 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
         session.startedAt = session.startedAt || (Date.now() - 60000);
         session.durationMs = Math.max(0, Date.now() - (Number(session.startedAt) || Date.now()));
         const st = this.computeAttemptStats(session, examObj);
-        session.score = st.correct;
-        session.maxScore = st.total;
+        let graded = { score: st.correct, maxScore: st.total };
+        try {
+          const qs = Regular.flattenQuestions(examObj) || [];
+          if (Regular.gradeAnswers) graded = Regular.gradeAnswers(qs, session.answers || {});
+        } catch (_) {}
+        session.score = graded.score;
+        session.maxScore = graded.maxScore;
         session.accuracy = st.accuracy;
         session.examTitle = examObj.title || 'Test preview';
         session.subject = examObj.subject || '';
@@ -8253,6 +8291,25 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
             <input type="text" class="form-control reeval-comment" data-qid="${key}" placeholder="Comment" style="min-width:100px;flex:1"/>`;
           td.appendChild(wrap);
         });
+        
+        // Editable correct answer for instructor
+        main.querySelectorAll('.result-card, .hist-q-card, .passage-result-q, tr.hist-q-row').forEach((card, i) => {
+          if (card.querySelector('.reeval-correct')) return;
+          const corrEl = [...card.querySelectorAll('div, td, span')].find(el =>
+            /correct answer/i.test(el.textContent || '') && (el.textContent || '').trim().length < 20
+          );
+          if (!corrEl) return;
+          const next = corrEl.nextElementSibling;
+          if (!next) return;
+          const current = (next.textContent || '').trim();
+          const wrap = document.createElement('div');
+          wrap.className = 'reeval-correct-wrap';
+          wrap.style.cssText = 'margin-top:0.35rem';
+          wrap.innerHTML = `<label style="font-size:0.8rem;color:var(--muted)">Edit correct answer
+            <input type="text" class="form-control reeval-correct" data-idx="${i}" value="${String(current).replace(/"/g, '&quot;')}" style="margin-top:0.25rem"/></label>`;
+          next.after(wrap);
+        });
+
         // Inject Points + Comment columns into result tables
         main.querySelectorAll('table.result-equal-cols').forEach(tbl => {
           const thead = tbl.querySelector('thead tr');
