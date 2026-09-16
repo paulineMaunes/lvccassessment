@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.74
+ * v1.5.75
  */
 
 const App = {
@@ -106,23 +106,33 @@ const App = {
     const codeDisp = String(code || '').replace(/(\d{4})(\d{4})/, '$1-$2');
     const joinUrl = portalUrl + (portalUrl.includes('?') ? '&' : '/?') + 'code=' + encodeURIComponent(String(code || '').replace(/\D/g, ''));
     const qr = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(joinUrl);
+    const firstName = String(studentName || 'Student').trim().split(/\s+/)[0] || 'Student';
+    const fullName = instructorName || instructorEmail || 'Instructor';
     return `
-<!DOCTYPE html><html><body style="font-family:Segoe UI,Arial,sans-serif;line-height:1.5;color:#0f172a;background:#f8fafc;padding:24px">
+<!DOCTYPE html><html><body style="font-family:Georgia,'Times New Roman',serif;line-height:1.55;color:#0f172a;background:#f8fafc;padding:24px">
   <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:12px;padding:28px;border:1px solid #e2e8f0">
-    <h2 style="margin:0 0 8px;color:#1e3a5f">LVCC Assessment Portal</h2>
-    <p style="color:#64748b;margin:0 0 20px">Integrity — We live with honesty, truthfulness, and moral courage.</p>
-    <p>Hello ${this._esc(studentName || 'Student')},</p>
+    <h2 style="margin:0 0 8px;color:#1e3a5f;font-family:Segoe UI,Arial,sans-serif">LVCC Assessment Portal</h2>
+    <p style="color:#64748b;margin:0 0 20px;font-family:Segoe UI,Arial,sans-serif">We live with honesty, truthfulness, and moral courage.</p>
+    <p>Hello ${this._esc(firstName)},</p>
     <p>${this._esc(blurb)}</p>
     <p><strong>Assessment:</strong> ${this._esc(examTitle || '')}</p>
-    <p style="font-size:1.25rem"><strong>Code:</strong> <span style="letter-spacing:0.05em">${this._esc(codeDisp)}</span></p>
+    <p style="font-size:1.25rem;font-family:Segoe UI,Arial,sans-serif"><strong>Code:</strong> <span style="letter-spacing:0.05em">${this._esc(codeDisp)}</span></p>
     <p style="margin:28px 0">
-      <a href="${this._esc(joinUrl)}" style="background:#387EC3;color:#fff;padding:14px 22px;text-decoration:none;border-radius:8px;font-weight:600;display:inline-block">Open assessment</a>
+      <a href="${this._esc(joinUrl)}" style="background:#387EC3;color:#fff;padding:14px 22px;text-decoration:none;border-radius:8px;font-weight:600;display:inline-block;font-family:Segoe UI,Arial,sans-serif">Open assessment</a>
     </p>
     <p style="color:#64748b;font-size:0.9rem">Or scan this QR code:</p>
     <p><img src="${qr}" width="180" height="180" alt="QR code" /></p>
-    <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0" />
-    <p style="font-size:0.85rem;color:#64748b">From: ${this._esc(instructorName || instructorEmail || 'Instructor')}<br/>
-    ${instructorEmail ? 'Reply to: ' + this._esc(instructorEmail) : ''}</p>
+    <hr style="border:none;border-top:1px solid #e2e8f0;margin:28px 0 20px" />
+    <div style="font-size:0.95rem;color:#0f172a;line-height:1.6">
+      <p style="font-style:italic;margin:0 0 0.75rem">Thanks be to God.</p>
+      <p style="font-style:italic;margin:0 0 0.35rem">Sincerely,</p>
+      <p style="margin:0.5rem 0 0.15rem"><strong>${this._esc(fullName)}</strong></p>
+      <p style="font-style:italic;margin:0 0 0.75rem">Higher Education Instructor</p>
+      <p style="font-style:italic;margin:0 0 0.75rem">"Wisdom Based on the Truth is Priceless."</p>
+      <p style="margin:0 0 0.15rem"><strong>LA VERDAD CHRISTIAN COLLEGE, INC.</strong></p>
+      <p style="font-style:italic;margin:0 0 1rem">Mc Arthur Highway, Sampaloc, Apalit, Pampanga</p>
+      <p style="font-size:0.78rem;color:#64748b;margin:0"><em><strong>Disclaimer:</strong> This communication may contain confidential or privileged information, and is intended solely for the individual or entity to whom it is originally addressed. Any disclosure, copying, dissemination, or any action taken in reliance on it by others, other than the intended recipient, is strictly prohibited. The opinions, conclusions, and statements expressed in this message are those of the sender and may not necessarily reflect the views of La Verdad Christian College, Inc.</em></p>
+    </div>
   </div>
 </body></html>`;
   },
@@ -210,46 +220,49 @@ const App = {
 
   _scrollTfFocus(gi, mode) {
     try {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          const cards = document.querySelectorAll('.table-builder-wrap, .card.q-in-section');
-          let root = null;
-          cards.forEach(c => {
-            if (c.getAttribute('data-qi') === String(gi)) root = c;
-            if (!root && c.querySelector(`[data-tf-add-row="${gi}"]`)) root = c;
+      const run = () => {
+        const main = document.querySelector('.main-content') || document.getElementById('app');
+        let root = document.querySelector(`.table-builder-wrap[data-qi="${gi}"]`);
+        if (!root) {
+          document.querySelectorAll('.card.q-in-section, .table-builder-wrap').forEach(c => {
+            if (String(c.getAttribute('data-qi')) === String(gi)) root = c;
+            else if (!root && c.querySelector(`[data-tf-add-row="${gi}"]`)) root = c;
           });
-          if (!root) root = document.querySelector(`[data-tf-add-row="${gi}"]`)?.closest('.card');
-          if (!root) root = document.getElementById('questions-builder');
-          if (!root) return;
-          if (mode === 'col') {
-            const headers = root.querySelectorAll('[data-tf-header]');
-            const last = headers[headers.length - 1];
-            if (last) {
-              last.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'end' });
-              try { last.focus({ preventScroll: true }); } catch(_) { try { last.focus(); } catch(__){} }
-            }
-          } else {
-            // Prefer last data row in THIS table only
-            const table = root.querySelector('table.tf-cfg-table, table.table-fill-grid, table');
-            const rows = table
-              ? table.querySelectorAll('tbody tr')
-              : root.querySelectorAll('tr');
-            let last = rows[rows.length - 1];
-            // skip footer button rows
-            if (last && last.querySelector('[data-tf-add-row]')) {
-              last = rows[rows.length - 2] || last;
-            }
-            if (last) {
-              last.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              const inp = last.querySelector('input:not([type=checkbox]):not([type=color]), textarea');
-              if (inp) try { inp.focus({ preventScroll: true }); } catch(_) { try { inp.focus(); } catch(__){} }
-            } else {
-              const btn = root.querySelector(`[data-tf-add-row="${gi}"]`);
-              if (btn) btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            }
-          }
-        });
-      });
+        }
+        if (!root) root = document.querySelector(`[data-tf-add-row="${gi}"]`)?.closest('.card, .q-in-section');
+        if (!root) return;
+        if (mode === 'col') {
+          const headers = root.querySelectorAll('[data-tf-header]');
+          const last = headers[headers.length - 1];
+          if (last && main) {
+            const mr = main.getBoundingClientRect();
+            const lr = last.getBoundingClientRect();
+            main.scrollTop += (lr.top - mr.top) - mr.height * 0.35;
+            try { last.focus({ preventScroll: true }); } catch (_) {}
+          } else if (last) last.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'end' });
+          return;
+        }
+        const table = root.querySelector('table');
+        const rows = table ? [...table.querySelectorAll('tbody tr')] : [...root.querySelectorAll('tr')];
+        // last data-like row (skip pure button rows)
+        let last = null;
+        for (let i = rows.length - 1; i >= 0; i--) {
+          if (rows[i].querySelector('input, textarea, [data-tf-cell]')) { last = rows[i]; break; }
+        }
+        if (!last) last = rows[rows.length - 1];
+        if (last && main) {
+          const mr = main.getBoundingClientRect();
+          const lr = last.getBoundingClientRect();
+          main.scrollTop += (lr.top - mr.top) - mr.height * 0.4;
+          const inp = last.querySelector('input:not([type=checkbox]):not([type=color]):not([type=number]), textarea');
+          if (inp) try { inp.focus({ preventScroll: true }); } catch (_) {}
+        } else if (last) {
+          last.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      };
+      requestAnimationFrame(() => setTimeout(run, 50));
+      setTimeout(run, 200);
+      setTimeout(run, 450);
     } catch (_) {}
   },
 
@@ -364,7 +377,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.74</div>
+          <div class="app-version">Build v1.5.75</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -506,7 +519,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.74</div>
+              <div class="app-version">v1.5.75</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -1664,7 +1677,15 @@ const App = {
         el.onclick = () => {
           const gi = Number(el.dataset.matchAddLeft);
           const q = (window._builderQuestions || [])[gi];
-          if (!q) return; q.left = q.left || []; q.left.push(''); q.correct = q.correct || []; q.correct.push(0); renderBuilder();
+          if (!q) return;
+          q.left = q.left || []; q.left.push('');
+          q.correct = q.correct || []; q.correct.push(0);
+          const per = Number(q.pointsPerItem) || 1;
+          q.points = per * q.left.length;
+          if (q.pointsMode === 'each' || !q.pointsMode) {
+            q.pointsMode = q.pointsMode || 'each';
+          }
+          renderBuilder();
         };
       });
       box.querySelectorAll('[data-match-add-right]').forEach(el => {
@@ -1678,7 +1699,12 @@ const App = {
         el.onclick = () => {
           const [gi, i] = el.dataset.matchDelLeft.split(':').map(Number);
           const q = (window._builderQuestions || [])[gi];
-          if (!q || !q.left) return; q.left.splice(i,1); if (q.correct) q.correct.splice(i,1); renderBuilder();
+          if (!q || !q.left) return;
+          q.left.splice(i,1);
+          if (q.correct) q.correct.splice(i,1);
+          const per = Number(q.pointsPerItem) || 1;
+          q.points = per * (q.left.length || 1);
+          renderBuilder();
         };
       });
       box.querySelectorAll('[data-match-del-right]').forEach(el => {
@@ -6004,7 +6030,7 @@ const App = {
         ensureSpace(Math.min(est, 80));
         writeSection(typeLabel[t] || t, () => {
           items.forEach(r => {
-            const promptLines = doc.splitTextToSize(this.pdfSafeText(String(r.prompt || 'Question').slice(0, 400)), 178);
+            const promptLines = doc.splitTextToSize(this.pdfSafeText(String(r.prompt || 'Question').slice(0, 800)), 180);
             const respEst = 12 + Math.ceil(String(r.response || '').length / 90) * 5;
             const corrEst = 12 + Math.ceil(String(r.correct || '').length / 90) * 5;
             // Keep question + response + correct together when possible
@@ -6026,7 +6052,7 @@ const App = {
             const respParts = this.pdfSafeText(String(r.response || '—').slice(0, 900)).split(/\n+/).filter(Boolean);
             respParts.forEach(line => {
               ensureSpace(8);
-              const lines = doc.splitTextToSize(line, 178);
+              const lines = doc.splitTextToSize(line, 180);
               doc.text(lines, 16, y);
               y += lines.length * 4.5 + 1;
             });
@@ -6040,7 +6066,7 @@ const App = {
             const corrParts = this.pdfSafeText(String(r.correct || '—').slice(0, 900)).split(/\n+/).filter(Boolean);
             corrParts.forEach(line => {
               ensureSpace(8);
-              const lines = doc.splitTextToSize(line, 178);
+              const lines = doc.splitTextToSize(line, 180);
               doc.text(lines, 16, y);
               y += lines.length * 4.5 + 1;
             });
@@ -6146,26 +6172,32 @@ const App = {
         ensureSpace(40);
         y += 6; writeSection('Table fill', () => {
           tableQs.forEach(q => {
-            ensureSpace(28);
-            doc.setFont(undefined, 'bold');
-            doc.setFontSize(10);
-            doc.setTextColor(15, 23, 42);
-            doc.text(this.pdfSafeText(q.prompt || 'Table'), 16, y); y += 7;
             const cols = Number(q.cols) || (q.headers && q.headers.length) || 3;
             const headers = q.headers || [];
             const cells = q.cells || {};
             const resp = (session.answers || {})[q.id] || {};
-            const colW = Math.min(178 / cols, 55);
-            const startX = 16;
+            const pageW = 182;
+            const startX = 14;
+            const colW = Math.min(pageW / cols, 60);
+            // Instruction first — full wrap, then gap so table never covers it
+            const promptLines = doc.splitTextToSize(this.pdfSafeText(q.prompt || 'Table'), pageW);
+            ensureSpace(12 + promptLines.length * 5 + 14);
+            doc.setFont(undefined, 'bold');
+            doc.setFontSize(10);
+            doc.setTextColor(15, 23, 42);
+            doc.text(promptLines, startX, y);
+            y += promptLines.length * 5 + 8;
             // header row
+            const headerH = 10;
             doc.setFillColor(59, 130, 246);
-            doc.rect(startX, y - 4, colW * cols, 8, 'F');
+            doc.rect(startX, y - 4, colW * cols, headerH, 'F');
             doc.setTextColor(255, 255, 255);
-            doc.setFontSize(8);
+            doc.setFontSize(7);
             for (let c = 0; c < cols; c++) {
-              doc.text(this.pdfSafeText(String(headers[c] || ('Col ' + (c+1)))).slice(0, 18), startX + c * colW + 1, y + 1);
+              const hLines = doc.splitTextToSize(this.pdfSafeText(String(headers[c] || ('Col ' + (c+1)))), colW - 2);
+              doc.text(hLines[0] || '', startX + c * colW + 1, y + 2);
             }
-            y += 8;
+            y += headerH + 1;
             doc.setTextColor(15, 23, 42);
             const correctList = [];
             let dataIdx = 0;
@@ -6188,7 +6220,8 @@ const App = {
                   for (let c = 0; c < cols; c++) {
                     const v = (row.values && row.values[c]) || '';
                     doc.setFontSize(7);
-                    doc.text(this.pdfSafeText(String(v)).slice(0, 16), startX + c * colW + 1, y + 2);
+                    const _sv = doc.splitTextToSize(this.pdfSafeText(String(v)), Math.max(8, colW - 2));
+                    doc.text(_sv[0] || '', startX + c * colW + 1, y + 2);
                   }
                   y += 9;
                   return;

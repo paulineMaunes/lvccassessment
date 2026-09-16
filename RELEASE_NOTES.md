@@ -654,3 +654,9 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - PDF: keep question+response+correct together across page breaks; less clipping
 - Reopen View Summary: full-screen overlay above list (no content under blur)
 - Test Email: clearer error + rules sample; firestore.rules includes match /mail/{id}
+
+## v1.5.75
+- Match: auto total points = items × points per match when adding/removing Column A
+- PDF: long text wraps within page margins; table starts below full instruction (no cover)
+- Email: greets student first name only; LVCC signature block (Thanks be to God / Sincerely / title / motto / college / disclaimer)
+- Table fill config: scroll targets newest row via main-content scroll offset (not first row)

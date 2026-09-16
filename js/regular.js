@@ -123,7 +123,7 @@ const Regular = {
           ]
         };
       case 'match':
-        return { ...base, left: ['Item 1', 'Item 2'], right: ['Match A', 'Match B'], correct: [0, 1] };
+        return { ...base, left: ['Item 1', 'Item 2'], right: ['Match A', 'Match B'], correct: [0, 1], points: 2, pointsMode: 'each', pointsPerItem: 1 };
       case 'reorder':
         return { ...base, items: ['First', 'Second', 'Third'], correct: [0, 1, 2] };
       case 'categorize':
@@ -835,7 +835,7 @@ const Regular = {
           </select>
         </label>
         <label>Per match <input type="number" min="0" step="0.5" class="form-control" data-match-per="${index}" value="${q.pointsPerItem ?? 1}" style="width:70px;display:inline-block"/></label>
-        <label>Total <input type="number" min="0" step="0.5" class="form-control" data-points="${index}" value="${q.points ?? 1}" style="width:70px;display:inline-block"/></label>
+        <label>Total <input type="number" min="0" step="0.5" class="form-control" data-points="${index}" value="${q.points != null ? q.points : left.length}" style="width:70px;display:inline-block"/></label>
       </div>
       <div class="match-cfg-cols">
         <div><strong>Column A</strong>${leftRows}
