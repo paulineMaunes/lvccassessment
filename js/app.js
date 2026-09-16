@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.73
+ * v1.5.74
  */
 
 const App = {
@@ -153,7 +153,27 @@ const App = {
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       createdBy: Auth.currentUser && Auth.currentUser.uid
     };
-    await window.db.collection('mail').add(doc);
+    try {
+      await window.db.collection('mail').add(doc);
+    } catch (err) {
+      // Fallback: user-scoped outbox (always allowed under users/{uid}/...)
+      const uid = Auth.currentUser && Auth.currentUser.uid;
+      if (uid) {
+        await window.db.collection('users').doc(uid).collection('mailOutbox').add({
+          ...doc,
+          pending: true,
+          error: String(err.message || err)
+        });
+        // Still try to surface the real requirement
+        const e = new Error(
+          (err.message || String(err)) +
+          '\n\nPublish Firestore rules allowing create on collection "mail" for authenticated users:\n' +
+          'match /mail/{id} { allow create: if request.auth != null; allow read: if false; }'
+        );
+        throw e;
+      }
+      throw err;
+    }
     return doc;
   },
 
@@ -186,6 +206,51 @@ const App = {
         resolve(v);
       };
     });
+  },
+
+  _scrollTfFocus(gi, mode) {
+    try {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const cards = document.querySelectorAll('.table-builder-wrap, .card.q-in-section');
+          let root = null;
+          cards.forEach(c => {
+            if (c.getAttribute('data-qi') === String(gi)) root = c;
+            if (!root && c.querySelector(`[data-tf-add-row="${gi}"]`)) root = c;
+          });
+          if (!root) root = document.querySelector(`[data-tf-add-row="${gi}"]`)?.closest('.card');
+          if (!root) root = document.getElementById('questions-builder');
+          if (!root) return;
+          if (mode === 'col') {
+            const headers = root.querySelectorAll('[data-tf-header]');
+            const last = headers[headers.length - 1];
+            if (last) {
+              last.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'end' });
+              try { last.focus({ preventScroll: true }); } catch(_) { try { last.focus(); } catch(__){} }
+            }
+          } else {
+            // Prefer last data row in THIS table only
+            const table = root.querySelector('table.tf-cfg-table, table.table-fill-grid, table');
+            const rows = table
+              ? table.querySelectorAll('tbody tr')
+              : root.querySelectorAll('tr');
+            let last = rows[rows.length - 1];
+            // skip footer button rows
+            if (last && last.querySelector('[data-tf-add-row]')) {
+              last = rows[rows.length - 2] || last;
+            }
+            if (last) {
+              last.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              const inp = last.querySelector('input:not([type=checkbox]):not([type=color]), textarea');
+              if (inp) try { inp.focus({ preventScroll: true }); } catch(_) { try { inp.focus(); } catch(__){} }
+            } else {
+              const btn = root.querySelector(`[data-tf-add-row="${gi}"]`);
+              if (btn) btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+          }
+        });
+      });
+    } catch (_) {}
   },
 
   responseClass(isCorrect) {
@@ -299,7 +364,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.73</div>
+          <div class="app-version">Build v1.5.74</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -441,7 +506,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.73</div>
+              <div class="app-version">v1.5.74</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -2547,8 +2612,10 @@ const App = {
           if (typeof Regular.ensureTableLayout === 'function') Regular.ensureTableLayout(q);
           window._tfFocusGi = gi;
           window._tfFocusMode = 'col';
+          window._tfFocusStamp = Date.now();
           syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
-          setTimeout(() => App._scrollTfFocus(gi, 'col'), 60);
+          setTimeout(() => App._scrollTfFocus(gi, 'col'), 120);
+          setTimeout(() => App._scrollTfFocus(gi, 'col'), 320);
         };
       });
       box.querySelectorAll('[data-tf-del-col]').forEach(el => {
@@ -2664,8 +2731,11 @@ const App = {
           q.rows = q.tableRows.filter(r => r && r.type === 'data').length;
           window._tfFocusGi = gi;
           window._tfFocusMode = 'row';
+          window._tfFocusStamp = Date.now();
           syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
-          setTimeout(() => App._scrollTfFocus(gi, 'row'), 60);
+          // Wait for full DOM paint after re-render
+          setTimeout(() => App._scrollTfFocus(gi, 'row'), 120);
+          setTimeout(() => App._scrollTfFocus(gi, 'row'), 320);
         };
       });
       box.querySelectorAll('[data-tf-top-merged]').forEach(el => {
@@ -3063,13 +3133,15 @@ const App = {
         if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
         if (pub) pub.disabled = true;
         const id = await this.saveAssessment(saveStatus);
+        if (id) {
+          window._editingExamId = id;
+          try { sessionStorage.setItem('lvcc_editing_exam', id); } catch (_) {}
+        }
         await UI.alert(
-          saveStatus === 'published' ? 'Assessment saved. It remains published.' : 'Assessment has been saved as draft.',
+          saveStatus === 'published' ? 'Assessment saved. It remains published. You can keep editing.' : 'Draft saved. You can keep editing.',
           saveStatus === 'published' ? 'Saved' : 'Draft saved'
         );
-        window._editingExamId = null;
-        try { sessionStorage.removeItem('lvcc_editing_exam'); } catch (_) {}
-        this.showInstructorHome();
+        // Stay on configuration page — do not navigate away
       } catch (err) {
         console.error(err);
         await UI.alert(err.message || String(err), 'Could not save');
@@ -3578,28 +3650,39 @@ const App = {
             const sid = btn.getAttribute('data-sid');
             const overlay = document.createElement('div');
             overlay.className = 'modal-overlay ui-modal-overlay';
-            overlay.style.cssText = 'z-index:60000;backdrop-filter:blur(4px);';
-            overlay.innerHTML = `<div class="modal ui-modal" style="width:96vw;max-width:1100px;height:100svh;max-height:100svh;display:flex;flex-direction:column;padding:0;position:relative">
-              <button type="button" id="rp-sum-x" style="position:absolute;top:0.5rem;right:0.75rem;z-index:2;border:none;background:transparent;font-size:1.5rem;cursor:pointer;line-height:1" title="Close">×</button>
-              <div id="rp-sum-body" style="flex:1;overflow:auto;padding:1rem">Loading…</div>
+            overlay.style.cssText = 'position:fixed;inset:0;z-index:70000;background:rgba(0,0,0,0.55);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;';
+            overlay.innerHTML = `<div class="modal ui-modal" style="width:96vw;max-width:1100px;height:96svh;max-height:96svh;display:flex;flex-direction:column;padding:0;position:relative;background:var(--card-bg,#fff);border-radius:12px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.35)">
+              <button type="button" id="rp-sum-x" style="position:absolute;top:0.4rem;right:0.75rem;z-index:5;border:none;background:rgba(0,0,0,0.06);width:2rem;height:2rem;border-radius:50%;font-size:1.4rem;cursor:pointer;line-height:1" title="Close">×</button>
+              <div id="rp-sum-body" style="flex:1;overflow:auto;padding:1.25rem 1rem 2rem">Loading…</div>
             </div>`;
             document.body.appendChild(overlay);
-            overlay.querySelector('#rp-sum-x').onclick = () => overlay.remove();
-            overlay.addEventListener('click', (ev) => { if (ev.target === overlay) overlay.remove(); });
+            const close = () => overlay.remove();
+            overlay.querySelector('#rp-sum-x').onclick = close;
+            overlay.addEventListener('click', (ev) => { if (ev.target === overlay) close(); });
             try {
-              await this.showStudentAttempt(sid);
-              const main = document.querySelector('.main-content');
-              const clone = main ? main.cloneNode(true) : null;
-              // Restore previous shell under blur is hard; instead load attempt HTML into popup
+              const snap = await window.db.collection('sessions').doc(sid).get();
+              if (!snap.exists) throw new Error('Session not found');
+              const session = { id: snap.id, ...snap.data() };
+              const exam = await Exam.getExam(session.examId);
+              // Build summary HTML without replacing the page under the modal
               const body = overlay.querySelector('#rp-sum-body');
-              if (clone) {
-                body.innerHTML = '';
-                body.appendChild(clone);
-              } else {
-                body.innerHTML = '<p>Could not load summary.</p>';
+              const holder = document.createElement('div');
+              holder.id = 'rp-temp-mount';
+              // Temporarily use a detached path: call FromObject into a fake shell
+              const prevShell = this.renderShell;
+              let captured = '';
+              this.renderShell = (html) => { captured = html; };
+              try {
+                await this.showStudentAttemptFromObject(session, exam);
+              } finally {
+                this.renderShell = prevShell;
               }
+              body.innerHTML = captured || '<p>Could not load summary.</p>';
+              body.querySelectorAll('#export-attempt-pdf').forEach(b => {
+                b.onclick = () => this.exportStudentReportPdf(sid, session.examId);
+              });
             } catch (err) {
-              overlay.querySelector('#rp-sum-body').innerHTML = `<p>${escapeHtml(err.message || String(err))}</p>`;
+              overlay.querySelector('#rp-sum-body').innerHTML = `<p style="color:var(--danger)">${escapeHtml(err.message || String(err))}</p>`;
             }
           };
         });
@@ -5681,6 +5764,9 @@ const App = {
         const tableRows = q.tableRows || null;
         const resp = answers[q.id] || {};
         let tableHtml = `<p>${esc(q.prompt || 'Table fill')}</p><table class="table tf-result-table"><tbody>`;
+        if (q.topMergedRow) {
+          tableHtml += `<tr class="tf-merged-row"><td colspan="${colsN || headers.length || 1}" style="background:#dbeafe;padding:0.5rem">${esc(q.topMergedRow)}</td></tr>`;
+        }
         if (headers.length) {
           tableHtml += '<tr class="tf-header-row">' + headers.map(h => `<th>${esc(h)}</th>`).join('') + '</tr>';
         }
@@ -5691,7 +5777,22 @@ const App = {
           tableRows.forEach((tr) => {
             if (tr.type === 'subheader') {
               const label = tr.label || (tr.values && tr.values.filter(Boolean).join(' / ')) || '';
-              tableHtml += `<tr class="tf-subheader-row"><td colspan="${colsN || headers.length || 1}">${esc(label)}</td></tr>`;
+              const vals = Array.isArray(tr.values) ? tr.values : [];
+              if (vals.length > 1) {
+                tableHtml += '<tr class="tf-subheader-row">' + vals.map(v => `<th>${esc(v || '')}</th>`).join('') + '</tr>';
+              } else {
+                tableHtml += `<tr class="tf-subheader-row"><td colspan="${colsN || headers.length || 1}"><strong>${esc(label)}</strong></td></tr>`;
+              }
+              return;
+            }
+            if (tr.type === 'merged') {
+              const label = tr.label || tr.text || (tr.values && tr.values.join(' ')) || '';
+              tableHtml += `<tr class="tf-merged-row"><td colspan="${colsN || headers.length || 1}" style="background:#e8f0fe;font-weight:600;padding:0.5rem">${esc(label)}</td></tr>`;
+              return;
+            }
+            if (tr.type === 'topMerged' || tr.type === 'instruction') {
+              const label = tr.label || tr.text || '';
+              tableHtml += `<tr class="tf-merged-row"><td colspan="${colsN || headers.length || 1}" style="background:#dbeafe;padding:0.5rem">${esc(label)}</td></tr>`;
               return;
             }
             const r = dataIdx++;
@@ -5704,7 +5805,7 @@ const App = {
                 const corr = Array.isArray(cell.correct) ? cell.correct[0] : (cell.correct || '');
                 const ok = stud.trim().toLowerCase() === String(corr).trim().toLowerCase();
                 const bn = correctList.length + 1;
-                tableHtml += `<td class="${ok ? 'tf-cell-ok' : 'tf-cell-bad'}">(${bn}) ${esc(stud || '—')}</td>`;
+                tableHtml += `<td class="tf-blank-cell ${ok ? 'tf-cell-ok' : 'tf-cell-bad'}" data-blank="1" data-key="${esc(key)}">(${bn}) ${esc(stud || '—')}</td>`;
                 correctList.push({ n: bn, corr: String(corr || '—') });
               } else {
                 const val = (tr.cells && tr.cells[c] != null) ? tr.cells[c]
@@ -5724,7 +5825,7 @@ const App = {
             const ok = stud.trim().toLowerCase() === String(corr).trim().toLowerCase();
             const bn = correctList.length + 1;
             correctList.push({ n: bn, corr: String(corr || '—') });
-            return `<td class="${ok ? 'tf-cell-ok' : 'tf-cell-bad'}">(${bn}) ${esc(stud || '—')}</td>`;
+            return `<td class="tf-blank-cell ${ok ? 'tf-cell-ok' : 'tf-cell-bad'}" data-blank="1" data-key="${esc(k)}">(${bn}) ${esc(stud || '—')}</td>`;
           }).join('') + '</tr>';
         }
         tableHtml += '</tbody></table>';
@@ -5903,10 +6004,14 @@ const App = {
         ensureSpace(Math.min(est, 80));
         writeSection(typeLabel[t] || t, () => {
           items.forEach(r => {
-            ensureSpace(24);
+            const promptLines = doc.splitTextToSize(this.pdfSafeText(String(r.prompt || 'Question').slice(0, 400)), 178);
+            const respEst = 12 + Math.ceil(String(r.response || '').length / 90) * 5;
+            const corrEst = 12 + Math.ceil(String(r.correct || '').length / 90) * 5;
+            // Keep question + response + correct together when possible
+            ensureSpace(Math.min(24 + promptLines.length * 5 + respEst + corrEst, 100));
             doc.setFont(undefined, 'bold');
             doc.setFontSize(10);
-            const promptLines = doc.splitTextToSize(this.pdfSafeText(String(r.prompt || 'Question').slice(0, 400)), 178);
+            doc.setTextColor(15, 23, 42);
             doc.text(promptLines, 16, y);
             y += promptLines.length * 5 + 2;
             doc.setFont(undefined, 'normal');
@@ -8103,6 +8208,18 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
         bar.innerHTML = '<strong>Re-evaluate mode</strong><span class="text-muted">Edit Points per question, then Save</span><button type="button" class="btn btn-primary" id="reeval-save">Save scores</button><button type="button" class="btn btn-ghost" id="reeval-close">Close</button>';
         const main = document.querySelector('.main-content') || root;
         main.insertBefore(bar, main.firstChild);
+        // Table fill blanks: one Points + Comment per blank cell
+        main.querySelectorAll('.tf-result-table td.tf-blank-cell, .tf-result-table td[data-blank="1"]').forEach((td, idx) => {
+          if (td.querySelector('.reeval-point')) return;
+          const key = td.getAttribute('data-key') || ('tfb' + idx);
+          const ok = td.classList.contains('tf-correct') || td.style.background.includes('d1fae5');
+          const pts = ok ? 1 : 0;
+          const wrap = document.createElement('div');
+          wrap.style.cssText = 'margin-top:0.35rem;display:flex;gap:0.35rem;flex-wrap:wrap;align-items:center';
+          wrap.innerHTML = `<label style="font-size:0.8rem">Pts <input type="number" step="0.5" class="form-control reeval-point" data-qid="${key}" value="${pts}" style="width:64px;display:inline-block"/></label>
+            <input type="text" class="form-control reeval-comment" data-qid="${key}" placeholder="Comment" style="min-width:100px;flex:1"/>`;
+          td.appendChild(wrap);
+        });
         // Inject Points + Comment columns into result tables
         main.querySelectorAll('table.result-equal-cols').forEach(tbl => {
           const thead = tbl.querySelector('thead tr');

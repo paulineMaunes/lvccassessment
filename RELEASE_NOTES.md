@@ -644,3 +644,13 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Browser Back/Forward navigation for main views
 - Reopen Previous: stats grid (name, total, correct, wrong, unattempted, accuracy, View Summary)
 - Email selected + Test Email + optional email before Allow continue
+
+## v1.5.74
+- Table fill config: reliable scroll/focus to NEWEST row/column after add
+- Save / Save as Draft stays on configuration page (no navigate away)
+- Match Column A: labels pack next to bullets (right-aligned to nodes)
+- Re-evaluate: Points+Comment on each table-fill blank cell
+- Results: merged / subheader / top-merged rows restored in table fill display
+- PDF: keep question+response+correct together across page breaks; less clipping
+- Reopen View Summary: full-screen overlay above list (no content under blur)
+- Test Email: clearer error + rules sample; firestore.rules includes match /mail/{id}
