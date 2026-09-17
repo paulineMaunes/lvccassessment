@@ -378,9 +378,13 @@ const Dashboard = {
       } else {
         list.forEach(s => {
           if (s.lastStudentMessage && s.chatPing && this._seenStudentMsgs[s.id] !== s.chatPing) {
-            this._seenStudentMsgs[s.id] = s.chatPing;
-            if (s.awaitingAdmit || s.lockedUntilAdmit) this.showAdmitRequest(s);
-            else this.showIncomingStudentMessage(s);
+            // Do NOT popup — only mark unread so right-panel stream shows red dot
+            // (keep admit popup for locked students)
+            if (s.awaitingAdmit || s.lockedUntilAdmit) {
+              this._seenStudentMsgs[s.id] = s.chatPing;
+              this.showAdmitRequest(s);
+            }
+            // else: leave chatPing mismatch so unread red-dot works; stream refreshes via _renderSessions
           }
         });
       }
@@ -1243,7 +1247,17 @@ const Dashboard = {
 
 
   async openStudentMessageHistory(sessionId) {
-    const s = (this.sessionsCache || []).find(x => x.id === sessionId);
+    let s = (this.sessionsCache || []).find(x => x.id === sessionId);
+    // Always load full history from server so conversation is complete from session start
+    try {
+      const snap = await window.db.collection('sessions').doc(sessionId).get();
+      if (snap.exists) {
+        s = { id: sessionId, ...(snap.data() || {}), ...(s || {}) };
+        const idx = (this.sessionsCache || []).findIndex(x => x.id === sessionId);
+        if (idx >= 0) this.sessionsCache[idx] = s;
+        else this.sessionsCache = [...(this.sessionsCache || []), s];
+      }
+    } catch (_) {}
     if (!s) {
       await UI.alert('Session not found.', 'Messages');
       return;
@@ -1258,9 +1272,12 @@ const Dashboard = {
     } catch (_) {}
 
     let hist = Array.isArray(s.chatHistory) ? s.chatHistory.slice() : [];
-    if (!hist.length && s.lastStudentMessage) {
-      hist.push({ from: 'student', text: s.lastStudentMessage, at: s.chatPing || Date.now() });
+    // Backfill single-field messages if history empty
+    if (!hist.length) {
+      if (s.lastStudentMessage) hist.push({ from: 'student', text: s.lastStudentMessage, at: s.chatPing || Date.now() });
+      if (s.lastInstructorMessage) hist.push({ from: 'instructor', text: s.lastInstructorMessage, at: s.instructorChatPing || Date.now() });
     }
+    hist.sort((a, b) => (Number(a.at) || 0) - (Number(b.at) || 0));
     if (s.lastInstructorMessage) {
       const has = hist.some(m => m.from === 'instructor' && m.text === s.lastInstructorMessage);
       if (!has) hist.push({ from: 'instructor', text: s.lastInstructorMessage, at: Date.now() });
@@ -1302,18 +1319,56 @@ const Dashboard = {
     const close = () => { overlay.remove(); this.refreshLiveMessageList(); };
     overlay.querySelector('#msg-hist-close').onclick = close;
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    const reloadThread = async () => {
+      try {
+        const snap = await window.db.collection('sessions').doc(sessionId).get();
+        if (snap.exists) {
+          const data = snap.data() || {};
+          const idx = (this.sessionsCache || []).findIndex(x => x.id === sessionId);
+          if (idx >= 0) this.sessionsCache[idx] = { id: sessionId, ...data };
+          else this.sessionsCache = [...(this.sessionsCache || []), { id: sessionId, ...data }];
+        }
+      } catch (_) {}
+      const s2 = (this.sessionsCache || []).find(x => x.id === sessionId) || s;
+      let hist = Array.isArray(s2.chatHistory) ? s2.chatHistory.slice() : [];
+      hist.sort((a, b) => (a.at || 0) - (b.at || 0));
+      const thread = overlay.querySelector('#msg-hist-thread');
+      if (!thread) return;
+      thread.innerHTML = hist.length ? hist.map(m => {
+        const who = m.from === 'instructor' ? 'You' : 'Student';
+        const align = m.from === 'instructor' ? 'flex-end' : 'flex-start';
+        const bg = m.from === 'instructor' ? 'var(--primary,#387EC3)' : 'var(--border,#e2e8f0)';
+        const color = m.from === 'instructor' ? '#fff' : 'inherit';
+        const t = m.at ? new Date(m.at).toLocaleString() : '';
+        return `<div style="align-self:${align};max-width:85%">
+          <div style="font-size:0.75rem;opacity:0.7;margin-bottom:0.15rem">${who} · ${escapeHtml(t)}</div>
+          <div style="background:${bg};color:${color};padding:0.55rem 0.75rem;border-radius:10px;white-space:pre-wrap">${escapeHtml(m.text || '')}</div>
+        </div>`;
+      }).join('') : '<p class="text-muted">No messages yet.</p>';
+      thread.scrollTop = thread.scrollHeight;
+    };
     overlay.querySelector('#msg-hist-send').onclick = async () => {
       const ta = overlay.querySelector('#msg-hist-reply');
       const text = (ta && ta.value || '').trim();
       if (!text) return;
+      const btn = overlay.querySelector('#msg-hist-send');
+      if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
       try {
         await this.messageStudent(sessionId, text);
         ta.value = '';
-        close();
+        await reloadThread();
+        this.refreshLiveMessageList();
       } catch (e) {
         await UI.alert(e.message || String(e), 'Error');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Send'; }
       }
     };
+    // Scroll to bottom on open
+    try {
+      const thread = overlay.querySelector('#msg-hist-thread');
+      if (thread) thread.scrollTop = thread.scrollHeight;
+    } catch (_) {}
   },
 
   async messageStudent(sessionId, prefillText) {
@@ -1363,7 +1418,10 @@ const Dashboard = {
           from: 'instructor'
         });
       } catch (_) {}
-      await UI.alert('Message sent to student. They will see a popup on their assessment screen.', 'Sent');
+      // Quiet success when already inside chat panel (prefill provided)
+      if (prefillText == null || !String(prefillText).trim()) {
+        await UI.alert('Message sent to student. They will see a popup on their assessment screen.', 'Sent');
+      }
       try { this.refreshLiveMessageList && this.refreshLiveMessageList(); } catch(_){}
     } catch (e) {
       console.error(e);

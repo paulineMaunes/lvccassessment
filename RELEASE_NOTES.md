@@ -733,3 +733,13 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Live dashboard: Refresh button per student — forces their assessment screen to reload
 - Student progress preserved (answers flushed to sessionStorage + Firestore before reload, same as F5)
 - First snapshot after open does not re-trigger an old refresh signal
+
+## v1.5.87
+- Email template picker shows readable preview (no raw function text)
+- Email header: logo beside centered title + tagline with spacing
+- Live messages: no interrupt popup; stream + unread red dot; full conversation on click
+- Chat reply stays open; does not wipe instructor compose on new messages
+- Student progress: every answer saved to sessionStorage + Firestore (F5 / force refresh keeps progress)
+- Last question → View Overview (edit answers) then Submit with loading blur
+- Submit errors keep student on page so they can retry; answers remain saved
+- Retake with locked previous answers: answered items locked; jump to unanswered

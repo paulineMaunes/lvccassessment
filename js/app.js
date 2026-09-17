@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.86
+ * v1.5.87
  */
 
 const App = {
@@ -535,7 +535,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.86</div>
+          <div class="app-version">Build v1.5.87</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -677,7 +677,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.86</div>
+              <div class="app-version">v1.5.87</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -7740,6 +7740,16 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
     try { session = this.restoreLocalAnswers(session) || session; } catch (_) {}
     let answers = { ...(session.answers || {}) };
     window._takeAnswers = answers;
+    const lockedKeys = new Set();
+    if (session.answersLocked || session.lockPreviousAnswers) {
+      const keys = session.lockedAnswerKeys || Object.keys(answers);
+      keys.forEach(k => {
+        const v = answers[k];
+        if (v !== undefined && v !== null && v !== '') lockedKeys.add(String(k));
+      });
+    }
+    window._lockedAnswerKeys = lockedKeys;
+    window._preferUnansweredOnly = lockedKeys.size > 0;
     window._passageTab = 0;
     window._seenSectionIntro = null;
     window._pendingSectionIntro = null;
@@ -7863,6 +7873,13 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
         gi = window._overviewJumpGi;
         window._overviewJumpGi = null;
         pi = 0;
+      }
+      // Retake: jump past locked/answered questions
+      if (window._preferUnansweredOnly) {
+        try {
+          const n = findNextUnanswered(0, -1);
+          if (n) { gi = n.gi; pi = n.pi; }
+        } catch (_) {}
       }
       if (gi >= groups.length) {
         const next = findNextUnanswered(0, -1);
@@ -8001,7 +8018,7 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
           </div>
           <div class="take-stage">${body}</div>
           <div class="take-nav">
-            <button type="button" class="btn btn-primary" id="take-next" class="btn btn-primary take-submit-btn">${(!showSkip) ? 'Submit' : 'Submit Answer'}</button>
+            <button type="button" class="btn btn-primary take-submit-btn" id="take-next">${(function(){ try { const n = findNextUnanswered(gi, (g.kind==='single'?0:-1)); if (!n && findNextUnanswered(0,-1)==null) return 'View Overview'; } catch(_){} return 'Submit Answer'; })()}</button>
           </div>
         </div>`;
 
@@ -8044,6 +8061,30 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
 
       if (box) {
         try { Regular.bindStudentMC(box, save); } catch (e) { console.warn(e); }
+        // Lock previously answered items on retake
+        try {
+          const lk = window._lockedAnswerKeys;
+          if (lk && lk.size) {
+            document.querySelectorAll('[data-qid]').forEach(el => {
+              const qid = el.getAttribute('data-qid');
+              if (qid && lk.has(String(qid))) {
+                el.style.opacity = '0.75';
+                el.querySelectorAll('input, textarea, select, button.take-opt').forEach(inp => {
+                  inp.disabled = true;
+                  inp.style.pointerEvents = 'none';
+                });
+                if (!el.querySelector('.locked-badge')) {
+                  const b = document.createElement('div');
+                  b.className = 'locked-badge text-muted';
+                  b.style.cssText = 'font-size:0.8rem;margin-top:0.35rem';
+                  b.textContent = 'Locked (already answered)';
+                  el.appendChild(b);
+                }
+              }
+            });
+          }
+        } catch (_) {}
+
         try {
           const passList = document.querySelector('.pass-q-list') || document.querySelector('.passage-take-right');
           if (passList) {
@@ -8098,6 +8139,17 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
 
       const goNext = async (skipPassage = false, isSkip = false) => {
         save();
+        // After saving current answers, if nothing left unanswered → overview
+        if (!isSkip && !skipPassage) {
+          try {
+            const left = findNextUnanswered(0, -1);
+            // if current is answered and no other unanswered (or only current was the last)
+            if (!left) {
+              this.showAnswerOverview(session, answers, groups, renderTake);
+              return;
+            }
+          } catch (_) {}
+        }
         if (isSkip && !skipPassage) {
           // Always move to the NEXT group (never stay on the same question)
           if (g.kind === 'passage') {
@@ -8129,9 +8181,8 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
           if (gi >= groups.length) {
             const n = findNextUnanswered(0, -1);
             if (n) { gi = n.gi; pi = n.pi; renderTake(); return; }
-            const ok = await UI.confirm('Submit this assessment? You will not be able to change answers after submitting.', 'Submit assessment');
-            if (!ok) return;
-            await this.finishRegularTake(session, answers, 'manual');
+            this.showAnswerOverview(session, answers, groups, renderTake);
+            return;
           } else renderTake();
           return;
         }
@@ -8356,7 +8407,10 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
     document.getElementById('ov-final-submit').onclick = async () => {
       const ok = await UI.confirm('Submit your assessment now? You will not be able to change answers after this.', 'Submit assessment');
       if (!ok) return;
-      this.finishRegularTake(session, answers, 'manual');
+      try {
+        sessionStorage.setItem('lvcc_answers_' + session.id, JSON.stringify(answers || {}));
+      } catch (_) {}
+      await this.finishRegularTake(session, answers, 'manual');
     };
     document.getElementById('ov-back').onclick = () => {
       // stay at last group
@@ -8374,12 +8428,22 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
   },
 
   async finishRegularTake(session, answers, reason = 'manual') {
+    // Prevent double-submit
+    if (window._submittingAssessment) return;
+    window._submittingAssessment = true;
+    try { if (window.UI && UI.showLoading) UI.showLoading('Submitting your assessment… Please wait.'); } catch (_) {}
     // Always kill live uploads first (protects Spark write quota)
     try { if (window.Monitor) Monitor.markSubmitting(); } catch (_) {}
     try { if (window.Monitor) Monitor.stop(); } catch (_) {}
     // Ensure screen share tracks end and integrity writing stops
     try { if (window.Monitor && Monitor.stream) Monitor.stream.getTracks().forEach(t => t.stop()); } catch (_) {}
     try { CodeEditor.beginSubmit(); } catch (_) {}
+    // Final local backup
+    try {
+      if (session && session.id) {
+        sessionStorage.setItem('lvcc_answers_' + session.id, JSON.stringify(answers || {}));
+      }
+    } catch (_) {}
     const isTest = !!(session._testMode || window._testMode || String(session.id).startsWith('test_'));
     if (!isTest) {
       try {
@@ -8402,8 +8466,18 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
           questionsSnapshot: session.questionsSnapshot || (exam ? Regular.flattenQuestions(exam) : [])
         }).catch(() => {});
         await Exam.submitSession(session.id, reason === 'time-up' ? 'time-up' : 'manual');
-      } catch (e) { console.error(e); }
+      } catch (e) {
+        console.error(e);
+        try { if (window.UI && UI.hideLoading) UI.hideLoading(); } catch (_) {}
+        window._submittingAssessment = false;
+        try {
+          await UI.alert('Submit failed: ' + (e.message || e) + '. Your answers are saved. Please try Submit again.', 'Submit error');
+        } catch (_) {}
+        return; // keep student on page so they can retry
+      }
     }
+    try { if (window.UI && UI.hideLoading) UI.hideLoading(); } catch (_) {}
+    window._submittingAssessment = false;
     this.clearExamQuery();
     document.getElementById('student-chat-fab')?.remove();
     document.getElementById('test-mode-bar')?.remove();
