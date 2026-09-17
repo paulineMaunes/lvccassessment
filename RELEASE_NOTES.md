@@ -762,3 +762,9 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Live: "Reopen for other student" adds more students to current reopened session
 - Blast message includes continuing sessions + instructorChatPing
 - Faster chat: critical message fields write first; history append async; live poll 2s
+
+## v1.5.91
+- Student floating message opens full session conversation with instructor (live thread + send)
+- Settings: Open buttons & links in a new tab
+- Courses & subjects page: add course/subject, enroll students by email (Firestore: courses, subjects, enrollments)
+- Reopened sessions: per-student time limit from each student's start/re-entry (durationMinutes), capped by window end

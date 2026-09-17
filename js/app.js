@@ -1,9 +1,21 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.90
+ * v1.5.91
  */
 
 const App = {
+  navAction(fn, routeHint) {
+    try {
+      if (this.openInNewTabPreferred && this.openInNewTabPreferred()) {
+        const u = new URL(location.href);
+        if (routeHint) u.searchParams.set('nav', routeHint);
+        window.open(u.pathname + u.search, '_blank');
+        return;
+      }
+    } catch (_) {}
+    if (typeof fn === 'function') return fn();
+  },
+
 
   /** Public portal URL for links/QR in emails (set once in Settings or auto-detect) */
 
@@ -622,7 +634,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.90</div>
+          <div class="app-version">Build v1.5.91</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -725,7 +737,9 @@ const App = {
         <div class="nav-item ${activeNav==='exams'?'active':''}" title="My Assessments" onclick="App.showInstructorHome();App.closeNav()">
           <span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M12 6v8"/><path d="M8 10h8"/></svg></span><span class="nav-label">My Assessments</span></div>
         <div class="nav-item ${activeNav==='sessions'?'active':''}" title="Sessions" onclick="App.showSessionsPage();App.closeNav()">
-          <span class="nav-ico" aria-hidden="true">▦</span><span class="nav-label">Sessions</span></div>`;
+          <span class="nav-ico" aria-hidden="true">▦</span><span class="nav-label">Sessions</span></div>
+        <div class="nav-item ${activeNav==='courses'?'active':''}" title="Courses" onclick="App.showCoursesPage();App.closeNav()">
+          <span class="nav-ico" aria-hidden="true">📚</span><span class="nav-label">Courses</span></div>`;
     } else if (role === 'teacher') {
       navItems = `
         <div class="nav-item ${activeNav==='dashboard'?'active':''}" title="Dashboard" onclick="App.showDashboard();App.closeNav()">
@@ -733,7 +747,9 @@ const App = {
         <div class="nav-item ${activeNav==='exams'?'active':''}" title="My Assessments" onclick="App.showInstructorHome();App.closeNav()">
           <span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M12 6v8"/><path d="M8 10h8"/></svg></span><span class="nav-label">My Assessments</span></div>
         <div class="nav-item ${activeNav==='sessions'?'active':''}" title="Sessions" onclick="App.showSessionsPage();App.closeNav()">
-          <span class="nav-ico" aria-hidden="true">▦</span><span class="nav-label">Sessions</span></div>`;
+          <span class="nav-ico" aria-hidden="true">▦</span><span class="nav-label">Sessions</span></div>
+        <div class="nav-item ${activeNav==='courses'?'active':''}" title="Courses" onclick="App.showCoursesPage();App.closeNav()">
+          <span class="nav-ico" aria-hidden="true">📚</span><span class="nav-label">Courses</span></div>`;
     } else if (role === 'proctor') {
       navItems = `
         <div class="nav-item ${activeNav==='dashboard'?'active':''}" title="Dashboard" onclick="App.showDashboard();App.closeNav()">
@@ -764,7 +780,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.90</div>
+              <div class="app-version">v1.5.91</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -4400,7 +4416,9 @@ const App = {
           submittedAt: null,
           reopenedPrevious: true,
           reopenedAt: firebase.firestore.FieldValue.serverTimestamp(),
-          endsAt: sched.endAt,
+          durationMinutes: sched.durationMinutes || Math.max(1, Math.round((sched.endAt - sched.startAt) / 60000)),
+          perStudentTimer: true,
+          endsAt: null,
           lastUpdate: firebase.firestore.FieldValue.serverTimestamp()
         });
       });
@@ -4547,6 +4565,149 @@ const App = {
     }
   },
 
+
+
+  async showCoursesPage() {
+    this.renderShell(`
+      <div class="card-header page-header-responsive">
+        <div>
+          <h2 class="page-title">Courses & subjects</h2>
+          <p class="page-subtitle text-muted">Create courses, subjects, and enroll students</p>
+        </div>
+        <div class="action-btns">
+          <button type="button" class="btn btn-primary" id="btn-add-course">Add course</button>
+          <button type="button" class="btn btn-ghost" id="btn-add-subject">Add subject</button>
+        </div>
+      </div>
+      <div id="courses-root"><div class="loading-screen"><div class="spinner"></div></div></div>
+    `, 'courses');
+    document.getElementById('btn-add-course').onclick = () => this.addCoursePrompt();
+    document.getElementById('btn-add-subject').onclick = () => this.addSubjectPrompt();
+    await this.renderCoursesRoot();
+  },
+
+  async renderCoursesRoot() {
+    const el = document.getElementById('courses-root');
+    if (!el) return;
+    try {
+      const cSnap = await window.db.collection('courses').get();
+      const sSnap = await window.db.collection('subjects').get();
+      const eSnap = await window.db.collection('enrollments').limit(500).get();
+      const courses = cSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const subjects = sSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const enrollments = eSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const byCourse = {};
+      subjects.forEach(s => {
+        const cid = s.courseId || '_none';
+        if (!byCourse[cid]) byCourse[cid] = [];
+        byCourse[cid].push(s);
+      });
+      el.innerHTML = courses.length ? courses.map(c => {
+        const subs = byCourse[c.id] || [];
+        return `<div class="card" style="margin-bottom:1rem;padding:1rem">
+          <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem">
+            <strong>${escapeHtml(c.name || 'Course')}</strong>
+            <span class="text-muted">${escapeHtml(c.code || '')}</span>
+          </div>
+          <ul style="margin:0.75rem 0 0;padding-left:1.1rem">
+            ${subs.map(s => {
+              const en = enrollments.filter(e => e.subjectId === s.id);
+              return `<li style="margin-bottom:0.5rem">
+                <strong>${escapeHtml(s.name || 'Subject')}</strong>
+                <span class="text-muted"> · ${en.length} enrolled</span>
+                <button type="button" class="btn btn-sm btn-ghost" data-enroll="${s.id}" data-sname="${escapeHtml(s.name || '')}">Enroll</button>
+                <button type="button" class="btn btn-sm btn-ghost" data-view-enroll="${s.id}">View</button>
+              </li>`;
+            }).join('') || '<li class="text-muted">No subjects yet</li>'}
+          </ul>
+        </div>`;
+      }).join('') : '<p class="text-muted">No courses yet. Click Add course.</p>';
+      el.querySelectorAll('[data-enroll]').forEach(btn => {
+        btn.onclick = () => this.enrollStudentsPrompt(btn.getAttribute('data-enroll'), btn.getAttribute('data-sname'));
+      });
+      el.querySelectorAll('[data-view-enroll]').forEach(btn => {
+        btn.onclick = () => this.viewSubjectEnrollments(btn.getAttribute('data-view-enroll'));
+      });
+    } catch (e) {
+      el.innerHTML = `<p class="text-muted">Could not load: ${escapeHtml(e.message || '')}. Ensure Firestore rules allow courses/subjects/enrollments.</p>`;
+    }
+  },
+
+  async addCoursePrompt() {
+    const name = await UI.prompt('Course name:', '', 'Add course', 'e.g. BSIT');
+    if (!name || !String(name).trim()) return;
+    const code = await UI.prompt('Course code (optional):', '', 'Course code', 'e.g. BSIT');
+    try {
+      await window.db.collection('courses').add({
+        name: String(name).trim(),
+        code: String(code || '').trim(),
+        createdBy: Auth.currentUser && Auth.currentUser.uid,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      await this.renderCoursesRoot();
+    } catch (e) { await UI.alert(e.message || String(e), 'Error'); }
+  },
+
+  async addSubjectPrompt() {
+    try {
+      const cSnap = await window.db.collection('courses').get();
+      const courses = cSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      if (!courses.length) { await UI.alert('Add a course first.', 'Subjects'); return; }
+      const name = await UI.prompt('Subject name:', '', 'Add subject', 'e.g. Financial Management');
+      if (!name || !String(name).trim()) return;
+      const labels = courses.map((c, i) => (i + 1) + '. ' + (c.name || c.id)).join('\n');
+      const pick = await UI.prompt('Course number:\n' + labels, '1', 'Select course');
+      if (pick == null) return;
+      const idx = Math.max(0, (Number(pick) || 1) - 1);
+      const course = courses[idx] || courses[0];
+      await window.db.collection('subjects').add({
+        name: String(name).trim(),
+        courseId: course.id,
+        courseName: course.name || '',
+        createdBy: Auth.currentUser && Auth.currentUser.uid,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      await this.renderCoursesRoot();
+    } catch (e) { await UI.alert(e.message || String(e), 'Error'); }
+  },
+
+  async enrollStudentsPrompt(subjectId, subjectName) {
+    const raw = await UI.prompt(
+      'Student emails for ' + (subjectName || 'subject') + ' (comma or newline separated):',
+      '',
+      'Enroll students',
+      'student@student.laverdad.edu.ph'
+    );
+    if (raw == null || !String(raw).trim()) return;
+    const emails = String(raw).split(/[,\n;]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+    try {
+      UI.showLoading('Enrolling…');
+      for (const email of emails) {
+        const id = subjectId + '_' + email.replace(/[^a-z0-9]/gi, '_');
+        await window.db.collection('enrollments').doc(id).set({
+          subjectId,
+          subjectName: subjectName || '',
+          email,
+          enrolledAt: firebase.firestore.FieldValue.serverTimestamp(),
+          enrolledBy: Auth.currentUser && Auth.currentUser.uid
+        }, { merge: true });
+      }
+      UI.hideLoading();
+      await UI.alert('Enrolled ' + emails.length + ' student(s).', 'Enroll');
+      await this.renderCoursesRoot();
+    } catch (e) {
+      try { UI.hideLoading(); } catch (_) {}
+      await UI.alert(e.message || String(e), 'Error');
+    }
+  },
+
+  async viewSubjectEnrollments(subjectId) {
+    try {
+      const snap = await window.db.collection('enrollments').where('subjectId', '==', subjectId).get();
+      const list = snap.docs.map(d => escapeHtml((d.data() || {}).email || '')).join('<br>') || 'None';
+      await UI.alert(list, 'Enrolled students');
+    } catch (e) { await UI.alert(e.message || String(e), 'Error'); }
+  },
 
   async showSessionsPage() {
     this.renderShell(`
@@ -7685,29 +7846,93 @@ const App = {
     const fab = document.createElement('button');
     fab.id = 'student-chat-fab';
     fab.className = 'fab-msg';
-    fab.title = 'Talk to instructor';
+    fab.title = 'Talk to instructor — view conversation';
     fab.innerHTML = '💬';
     fab.style.zIndex = '9500';
     fab.style.pointerEvents = 'auto';
-    fab.onclick = async () => {
-      // Suppress integrity blur while messaging
-      if (window.Monitor) Monitor._uiBusy = true;
+    fab.onclick = () => this.openStudentSessionChat(sessionId);
+    document.body.appendChild(fab);
+  },
+
+  async openStudentSessionChat(sessionId) {
+    if (!sessionId || String(sessionId).startsWith('test_')) return;
+    if (window.Monitor) Monitor._uiBusy = true;
+    document.getElementById('student-chat-overlay')?.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'student-chat-overlay';
+    overlay.className = 'modal-overlay ui-modal-overlay';
+    overlay.style.cssText = 'z-index:60000;position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.55)';
+    overlay.innerHTML = `
+      <div class="msg-history-panel" style="width:min(720px,96vw);height:min(100svh,900px);max-height:100svh;background:var(--card-bg,#fff);border-radius:12px;display:flex;flex-direction:column;overflow:hidden">
+        <div style="padding:1rem 1.25rem;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <strong>Conversation with instructor</strong>
+            <div class="text-muted" style="font-size:0.85rem">Full session history</div>
+          </div>
+          <button type="button" class="btn btn-ghost" id="stu-chat-close">Close</button>
+        </div>
+        <div id="stu-chat-thread" style="flex:1;overflow-y:auto;padding:1rem;display:flex;flex-direction:column;gap:0.75rem">
+          <p class="text-muted">Loading…</p>
+        </div>
+        <div style="padding:0.75rem 1rem;border-top:1px solid var(--border);display:flex;gap:0.5rem">
+          <textarea id="stu-chat-reply" class="form-control" rows="2" placeholder="Message your instructor…" style="flex:1;resize:vertical"></textarea>
+          <button type="button" class="btn btn-primary" id="stu-chat-send">Send</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = () => {
+      overlay.remove();
+      if (this._stuChatUnsub) { try { this._stuChatUnsub(); } catch (_) {} this._stuChatUnsub = null; }
+      setTimeout(() => { if (window.Monitor) Monitor._uiBusy = false; }, 400);
+    };
+    overlay.querySelector('#stu-chat-close').onclick = close;
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+    const paint = (data) => {
+      let hist = Array.isArray(data.chatHistory) ? data.chatHistory.slice() : [];
+      if (!hist.length) {
+        if (data.lastStudentMessage) hist.push({ from: 'student', text: data.lastStudentMessage, at: data.chatPing || 0 });
+        if (data.lastInstructorMessage) hist.push({ from: 'instructor', text: data.lastInstructorMessage, at: data.instructorChatPing || 0 });
+      }
+      hist.sort((a, b) => (Number(a.at) || 0) - (Number(b.at) || 0));
+      const thread = overlay.querySelector('#stu-chat-thread');
+      if (!thread) return;
+      thread.innerHTML = hist.length ? hist.map(m => {
+        const who = m.from === 'instructor' ? 'Instructor' : 'You';
+        const align = m.from === 'student' ? 'flex-end' : 'flex-start';
+        const bg = m.from === 'student' ? 'var(--primary,#387EC3)' : 'var(--border,#e2e8f0)';
+        const color = m.from === 'student' ? '#fff' : 'inherit';
+        const t = m.at ? new Date(m.at).toLocaleString() : '';
+        return `<div style="align-self:${align};max-width:85%">
+          <div style="font-size:0.75rem;opacity:0.7;margin-bottom:0.15rem">${who} · ${escapeHtml(t)}</div>
+          <div style="background:${bg};color:${color};padding:0.55rem 0.75rem;border-radius:10px;white-space:pre-wrap">${escapeHtml(m.text || '')}</div>
+        </div>`;
+      }).join('') : '<p class="text-muted">No messages yet. Send a message below.</p>';
+      thread.scrollTop = thread.scrollHeight;
+    };
+
+    try {
+      this._stuChatUnsub = window.db.collection('sessions').doc(sessionId).onSnapshot(snap => {
+        if (snap.exists) paint(snap.data() || {});
+      }, () => {});
+    } catch (_) {
       try {
-        const msg = await UI.prompt('Message your instructor:', '', 'Talk to instructor', 'Talk to instructor');
-        if (msg == null) return;
-        const text = String(msg).trim();
-        if (!text) {
-          await UI.alert('Please type a message.', 'Empty');
-          return;
-        }
+        const snap = await window.db.collection('sessions').doc(sessionId).get();
+        if (snap.exists) paint(snap.data() || {});
+      } catch (e) {
+        overlay.querySelector('#stu-chat-thread').innerHTML = '<p class="text-muted">Could not load messages.</p>';
+      }
+    }
+
+    overlay.querySelector('#stu-chat-send').onclick = async () => {
+      const ta = overlay.querySelector('#stu-chat-reply');
+      const text = (ta && ta.value || '').trim();
+      if (!text) return;
+      const btn = overlay.querySelector('#stu-chat-send');
+      if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+      try {
         const ping = Date.now();
-        const entry = {
-          id: 'm_' + ping,
-          from: 'student',
-          text,
-          at: ping,
-          readByInstructor: false
-        };
+        const entry = { id: 'm_' + ping, from: 'student', text, at: ping, readByInstructor: false };
         await window.db.collection('sessions').doc(sessionId).update({
           lastStudentMessage: text,
           lastStudentMessageAt: firebase.firestore.FieldValue.serverTimestamp(),
@@ -7718,15 +7943,13 @@ const App = {
         window.db.collection('sessions').doc(sessionId).update({
           chatHistory: firebase.firestore.FieldValue.arrayUnion(entry)
         }).catch(() => {});
-        await UI.alert('Message sent to instructor.', 'Sent');
+        if (ta) ta.value = '';
       } catch (e) {
-        console.error(e);
         await UI.alert(e.message || 'Could not send', 'Error');
       } finally {
-        setTimeout(() => { if (window.Monitor) Monitor._uiBusy = false; }, 800);
+        if (btn) { btn.disabled = false; btn.textContent = 'Send'; }
       }
     };
-    document.body.appendChild(fab);
   },
 
 
@@ -7894,6 +8117,16 @@ const App = {
         return this.showStudentHome();
       }
       if (session.allowContinue || session.instructorAdmitted || session.reopenedPrevious) {
+        const durMin = Number(session.durationMinutes) || 60;
+        let personalEnd = Date.now() + Math.max(1, durMin) * 60000;
+        try {
+          const ex = session.exam || (session.examId ? await Exam.getExam(session.examId) : null);
+          if (ex && ex.durationMinutes && !session.durationMinutes) {
+            personalEnd = Date.now() + Math.max(1, Number(ex.durationMinutes)) * 60000;
+            session.durationMinutes = ex.durationMinutes;
+          }
+          if (ex && ex.endAt) personalEnd = Math.min(personalEnd, Number(ex.endAt));
+        } catch (_) {}
         await window.db.collection('sessions').doc(session.id).update({
           status: 'active',
           monitoringStopped: false,
@@ -7901,12 +8134,18 @@ const App = {
           teacherEnded: false,
           submitReason: null,
           allowContinue: true,
+          perStudentTimer: true,
+          durationMinutes: Number(session.durationMinutes) || durMin,
+          continueStartedAt: Date.now(),
+          endsAt: personalEnd,
           reenteredAt: firebase.firestore.FieldValue.serverTimestamp(),
           lastUpdate: firebase.firestore.FieldValue.serverTimestamp()
         }).catch(() => {});
         session.status = 'active';
         session.monitoringStopped = false;
         session.allowContinue = true;
+        session.endsAt = personalEnd;
+        session.perStudentTimer = true;
         // Restart integrity + screen monitoring for reopened attempt
         try {
           if (window.Monitor) {

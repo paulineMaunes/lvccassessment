@@ -139,17 +139,28 @@ const Theme = {
   openSettings() {
     document.getElementById('settings-popover')?.remove();
     document.getElementById('user-popover')?.remove();
+    let openNew = false;
+    try { openNew = localStorage.getItem('lvcc_open_new_tab') === '1'; } catch (_) {}
     const overlay = document.createElement('div');
     overlay.id = 'settings-popover';
     overlay.className = 'popover-overlay';
     overlay.innerHTML = `<div class="popover-card settings-card" style="display:flex;flex-direction:column;min-height:220px">
       <h3 style="margin-top:0">Settings</h3>
       ${this.settingsSwitchHtml()}
+      <label style="display:flex;align-items:center;gap:0.5rem;margin-top:1rem;cursor:pointer;font-size:0.95rem">
+        <input type="checkbox" id="settings-open-new-tab" ${openNew ? 'checked' : ''} />
+        Open buttons & links in a new tab
+      </label>
+      <p class="text-muted" style="font-size:0.8rem;margin:0.35rem 0 0">When enabled, main menu navigation can open in a new browser tab.</p>
       <div style="flex:1"></div>
       <button type="button" class="btn btn-ghost btn-block" id="settings-about-btn" style="margin-top:1.5rem;text-align:center;display:block;width:100%">About</button>
     </div>`;
     overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
     document.body.appendChild(overlay);
+    document.getElementById('settings-open-new-tab')?.addEventListener('change', (e) => {
+      try { localStorage.setItem('lvcc_open_new_tab', e.target.checked ? '1' : '0'); } catch (_) {}
+      if (window.App && App.setOpenInNewTab) App.setOpenInNewTab(e.target.checked);
+    });
     document.getElementById('settings-about-btn')?.addEventListener('click', () => {
       overlay.remove();
       this.openAbout();
