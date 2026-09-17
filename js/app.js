@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.76
+ * v1.5.78
  */
 
 const App = {
@@ -250,6 +250,30 @@ const App = {
     } catch (_) {}
   },
 
+  syncPassageEditorsFromDom() {
+    try {
+      document.querySelectorAll('[data-pass-html]').forEach(ed => {
+        const gi = Number(ed.getAttribute('data-pass-html'));
+        const q = (window._builderQuestions || [])[gi];
+        if (!q) return;
+        const ti = Number(ed.getAttribute('data-pass-active-tab') || 0) || 0;
+        q.passages = q.passages || [];
+        if (!q.passages[ti]) q.passages[ti] = { id: 'p' + (ti + 1), title: 'Passage ' + (ti + 1), html: '' };
+        q.passages[ti].html = ed.innerHTML;
+        if (ti === 0) q.passageHtml = ed.innerHTML;
+        // also persist nested question prompts/options from DOM
+        document.querySelectorAll(`[data-pass-q-prompt^="${gi}:"]`).forEach(inp => {
+          const ki = Number(String(inp.getAttribute('data-pass-q-prompt')).split(':')[1]);
+          if (q.questions && q.questions[ki]) q.questions[ki].prompt = inp.value;
+        });
+        document.querySelectorAll(`[data-pass-q-points^="${gi}:"]`).forEach(inp => {
+          const ki = Number(String(inp.getAttribute('data-pass-q-points')).split(':')[1]);
+          if (q.questions && q.questions[ki]) q.questions[ki].points = Number(inp.value) || 1;
+        });
+      });
+    } catch (_) {}
+  },
+
   _scrollTfFocus(gi, mode) {
     try {
       const run = () => {
@@ -409,7 +433,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.76</div>
+          <div class="app-version">Build v1.5.78</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -551,7 +575,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.76</div>
+              <div class="app-version">v1.5.78</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -1183,6 +1207,7 @@ const App = {
   },
 
   async saveAssessment(status = 'draft', schedule = null) {
+    try { this.syncPassageEditorsFromDom(); } catch (_) {}
     let payload = this.collectAssessmentForm(status);
     if (!payload.title) {
       throw new Error('Title is required.');
@@ -1306,6 +1331,42 @@ const App = {
     // Strip undefined (Firestore rejects undefined)
     Object.keys(payload).forEach(k => payload[k] === undefined && delete payload[k]);
 
+
+    // Normalize scoring fields so match/categorize/passage points are never stuck at 1
+    const normPts = (q) => {
+      if (!q) return;
+      if (q.type === 'match') {
+        const n = (q.left || []).length || 0;
+        const per = Number(q.pointsPerItem) > 0 ? Number(q.pointsPerItem) : 1;
+        if (!q.pointsMode) q.pointsMode = 'each';
+        if (q.pointsMode === 'each') q.points = n * per;
+        else if (!(Number(q.points) > 0)) q.points = n * per;
+      }
+      if (q.type === 'categorize') {
+        const n = (q.items || []).length || 0;
+        const per = Number(q.pointsPerItem) > 0 ? Number(q.pointsPerItem) : 1;
+        if (!q.pointsMode) q.pointsMode = 'each';
+        if (q.pointsMode === 'each') q.points = n * per;
+        else if (!(Number(q.points) > 0)) q.points = n * per;
+      }
+      if ((q.type === 'passage' || q.isPassageSet) && Array.isArray(q.questions)) {
+        q.questions.forEach(kq => {
+          if (!(Number(kq.points) > 0)) kq.points = 1;
+        });
+      }
+      if (q.type === 'table' || q.type === 'tablefill') {
+        const cells = q.cells || {};
+        const blanks = Object.keys(cells).filter(k => cells[k] && cells[k].blank);
+        const per = Number(q.pointsPerItem) > 0 ? Number(q.pointsPerItem) : 1;
+        if ((q.pointsMode || 'all') === 'each' && blanks.length) q.points = blanks.length * per;
+      }
+    };
+
+    try {
+      (payload.sections || []).forEach(s => (s.questions || []).forEach(normPts));
+      (payload.questions || []).forEach(normPts);
+    } catch (_) {}
+
     // Light compress first (smaller uploads), then move images to Firebase Storage
     // so the Firestore exam document stays under the 1 MB hard limit.
     payload = await this.compressAssessmentPayload(payload, 900 * 1024); // keep under ~1MB Firestore doc
@@ -1326,13 +1387,27 @@ const App = {
       try { sessionStorage.setItem('lvcc_editing_exam', examId); } catch (_) {}
     }
 
-    // Storage upload PARKED — keep images inline in Firestore (must stay under 1 MB total)
-    // Do not call MediaStore.externalizeImages until Storage is configured and billing works.
-    const bytes = this._payloadBytes(payload);
+    // Firestore hard limit is 1 MiB per document (Blaze does not raise this).
+    // Move large base64 images to Firebase Storage so the exam doc stays under the limit.
+    let bytes = this._payloadBytes(payload);
+    if (bytes > 850 * 1024) {
+      try {
+        payload = await this.externalizeAssessmentImages(payload, examId);
+        bytes = this._payloadBytes(payload);
+      } catch (storErr) {
+        console.warn('Storage externalize', storErr);
+        throw new Error(
+          'Assessment is large (' + Math.round(bytes / 1024) + ' KB). Could not upload images to Storage: ' +
+          (storErr.message || storErr) +
+          '. Enable Firebase Storage, publish rules for assessments/{examId}/**, and ensure storageBucket is set in firebase-config.'
+        );
+      }
+    }
+    bytes = this._payloadBytes(payload);
     if (bytes > 1048576) {
       throw new Error(
-        'Assessment is too large (' + Math.round(bytes / 1024) + ' KB). Firestore max is 1 MB per document. ' +
-        'Reduce or remove images so the whole assessment is under 1 MB, then try again.'
+        'Assessment is still too large (' + Math.round(bytes / 1024) + ' KB) after moving images to Storage. ' +
+        'Firestore max is 1 MB per document (hard limit). Reduce text/tables or split into smaller assessments.'
       );
     }
 
@@ -1523,6 +1598,7 @@ const App = {
 
 
     const renderBuilder = function renderBuilder() {
+      try { App.syncPassageEditorsFromDom(); } catch (_) {}
       window._renderAssessmentBuilder = renderBuilder;
       window._lvccRenderBuilder = renderBuilder;
       // Preserve focus so typing is not interrupted by full re-renders
@@ -1586,14 +1662,17 @@ const App = {
           }
           if (q.type === 'passage' || q.isPassageSet) {
             return `<div class="card q-in-section passage-builder-wrap" data-si="${si}" data-qi="${qi}">${numLabel}${Regular.renderBuilderPassage(q, globalIdx)}
+              <button type="button" class="btn btn-sm btn-ghost mt-1" data-dup-q="${si}:${qi}">Duplicate</button>
               <button type="button" class="btn btn-sm btn-muted mt-1" data-del-q="${si}:${qi}">Remove question</button></div>`;
           }
           if (q.type === 'categorize') {
             return `<div class="card q-in-section categorize-builder-wrap" data-si="${si}" data-qi="${qi}">${numLabel}${Regular.renderBuilderCategorize(q, globalIdx)}
+              <button type="button" class="btn btn-sm btn-ghost mt-1" data-dup-q="${si}:${qi}">Duplicate</button>
               <button type="button" class="btn btn-sm btn-muted mt-1" data-del-q="${si}:${qi}">Remove question</button></div>`;
           }
           if (q.type === 'table') {
             return `<div class="card q-in-section table-builder-wrap" data-si="${si}" data-qi="${qi}">${numLabel}${Regular.renderBuilderTable(q, globalIdx)}
+              <button type="button" class="btn btn-sm btn-ghost mt-1" data-dup-q="${si}:${qi}">Duplicate</button>
               <button type="button" class="btn btn-sm btn-muted mt-1" data-del-q="${si}:${qi}">Remove question</button></div>`;
           }
           if (q.type === 'match') {
@@ -1751,6 +1830,24 @@ const App = {
           if (!(await UI.confirm('Delete this question?', 'Delete question'))) return;
           const [si, qi] = el.dataset.delQ.split(':').map(Number);
           window._builderSections[si].questions.splice(qi, 1);
+          syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+        };
+      });
+
+      box.querySelectorAll('[data-dup-q]').forEach(el => {
+        el.onclick = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          try { App.syncPassageEditorsFromDom(); } catch (_) {}
+          const [si, qi] = String(el.dataset.dupQ).split(':').map(Number);
+          const secs = window._builderSections || [];
+          if (!secs[si] || !secs[si].questions || !secs[si].questions[qi]) return;
+          const src = secs[si].questions[qi];
+          const copy = JSON.parse(JSON.stringify(src));
+          copy.id = 'q' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+          if (Array.isArray(copy.questions)) {
+            copy.questions.forEach((kq, i) => { kq.id = 'pq' + Date.now() + '_' + i; });
+          }
+          secs[si].questions.splice(qi + 1, 0, copy);
           syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
         };
       });
@@ -1954,7 +2051,18 @@ const App = {
       });
 
       box.querySelectorAll('[data-points]').forEach(el => {
-        el.oninput = () => { const q = flat[Number(el.dataset.points)]; if (q) q.points = Number(el.value) || 1; };
+        el.oninput = () => {
+          const q = (window._builderQuestions || [])[Number(el.dataset.points)];
+          if (!q) return;
+          q.points = Number(el.value);
+          if (!(q.points > 0)) q.points = 1;
+          if (q.type === 'match' && (q.pointsMode || 'each') === 'each') {
+            const n = (q.left || []).length || 1;
+            const per = Number(q.pointsPerItem) || 1;
+            // keep pointsPerItem in sync when user edits total
+            if (n > 0) q.pointsPerItem = q.points / n;
+          }
+        };
       });
       box.querySelectorAll('[data-modified]').forEach(el => {
         el.oninput = () => { const q = flat[Number(el.dataset.modified)]; if (q) q.modifiedAnswer = el.value; };
@@ -2426,6 +2534,11 @@ const App = {
             ed.innerHTML = q.passages[ti].html || '';
             ed.dataset.passActiveTab = String(ti);
           }
+          // Show only questions for this tab
+          wrap.querySelectorAll('.pass-q-card-tab').forEach(card => {
+            const t = Number(card.getAttribute('data-tab') || 0);
+            card.style.display = (t === ti) ? '' : 'none';
+          });
         };
         el.ondblclick = async (e) => {
           e.preventDefault();
@@ -2448,11 +2561,38 @@ const App = {
           const q = qAt(gi);
           if (!q) return;
           q.questions = Array.isArray(q.questions) ? q.questions : [];
-          q.questions.push({ id: 'pq' + Date.now(), type: 'multiple', prompt: '', options: ['', '', '', ''], correct: 0, points: 1 });
+          const tabEl = box.querySelector(`[data-pass-html="${gi}"]`);
+          const activeTab = tabEl ? (Number(tabEl.getAttribute('data-pass-active-tab')) || 0) : 0;
+          q.questions.push({
+            id: 'pq' + Date.now(), type: 'multiple', prompt: '', options: ['', '', '', ''],
+            correct: 0, points: 1, passageIndex: activeTab, passageTab: activeTab
+          });
+          window._passFocusGi = gi;
+          window._passFocusScroll = true;
           syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+          setTimeout(() => {
+            const root = document.querySelector(`.passage-builder-wrap [data-gidx="${gi}"]`) || document.querySelector(`[data-pass-add-q="${gi}"]`)?.closest('.passage-builder-wrap');
+            const list = root && root.querySelector('.pass-q-list-scroll, .pass-q-list');
+            if (list) {
+              const last = list.lastElementChild;
+              if (last) last.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+          }, 150);
         };
       });
       
+      box.querySelectorAll('[data-pass-q-tab]').forEach(el => {
+        el.onchange = () => {
+          const [gi, ki] = el.dataset.passQTab.split(':').map(Number);
+          const q = (window._builderQuestions || [])[gi];
+          if (q && q.questions && q.questions[ki]) {
+            q.questions[ki].tabIndex = Number(el.value) || 0;
+            q.questions[ki].passageTab = Number(el.value) || 0;
+            const card = el.closest('.pass-q-card-tab');
+            if (card) card.setAttribute('data-tab', String(el.value));
+          }
+        };
+      });
       box.querySelectorAll('[data-pass-q-points]').forEach(el => {
         el.oninput = () => {
           const [gi, ki] = el.dataset.passQPoints.split(':').map(Number);
@@ -6909,6 +7049,22 @@ const App = {
 
     try { if (window.UI) UI.hideLoading(); } catch (_) {}
     const isTestSession = !!(session._testMode || window._testMode || String(session.id || '').startsWith('test_'));
+    // Mobile: Google Chrome only (block Safari, Samsung Internet, Firefox, Edge mobile, etc.)
+    try {
+      if (!isTestSession && window.Monitor) {
+        Monitor.detectDevice();
+        const mobile = (typeof Monitor.isMobileDevice === 'function')
+          ? Monitor.isMobileDevice()
+          : (Monitor.deviceType === 'mobile' || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || ''));
+        if (mobile && typeof Monitor.isSupportedBrowser === 'function' && !Monitor.isSupportedBrowser()) {
+          await UI.alert(
+            'On a phone or tablet you must use Google Chrome to take this assessment. Open this link in Chrome and try again.',
+            'Chrome required on mobile'
+          );
+          return this.showStudentHome();
+        }
+      }
+    } catch (_) {}
     // Resume vs lock: intentional leave requires instructor Admit (not for Test as student)
     
     // Allow return via assessment code unless instructor force-ended the attempt
@@ -7310,6 +7466,11 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
           ? g.passage.passages
           : [{ title: 'Passage 1', html: (g.passage && (g.passage.passageHtml || g.passage.html || g.passage.prompt || g.passage.content)) || '' }];
         const activeTab = window._passageTab || 0;
+        // Show only questions linked to this passage tab (default tab 0)
+        list = list.filter(kq => {
+          const t = kq.tabIndex != null ? Number(kq.tabIndex) : (kq.passageTab != null ? Number(kq.passageTab) : 0);
+          return t === activeTab;
+        });
         const tabBar = tabs.map((pp, i) =>
           `<button type="button" class="passage-tab ${i === activeTab ? 'active' : ''}" data-pass-tab="${i}">${escapeHtml(pp.title || ('Passage ' + (i + 1)))}</button>`
         ).join('');
@@ -7607,13 +7768,16 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
       document.querySelectorAll('[data-pass-tab]').forEach(btn => {
         btn.onclick = () => {
           window._passageTab = Number(btn.dataset.passTab) || 0;
-          const tabs = (g.passage && g.passage.passages && g.passage.passages.length)
-            ? g.passage.passages
-            : [{ title: 'Passage 1', html: (g.passage && (g.passage.passageHtml || g.passage.prompt)) || '' }];
-          const html = (tabs[window._passageTab] && tabs[window._passageTab].html) || '';
-          const doc = document.querySelector('.passage-doc-scroll .passage-doc');
-          if (doc) doc.innerHTML = html;
-          document.querySelectorAll('[data-pass-tab]').forEach(b => b.classList.toggle('active', Number(b.dataset.passTab) === window._passageTab));
+          // Full re-render so questions for this tab show/hide
+          try { renderTake(); } catch (_) {
+            const tabs = (g.passage && g.passage.passages && g.passage.passages.length)
+              ? g.passage.passages
+              : [{ title: 'Passage 1', html: (g.passage && (g.passage.passageHtml || g.passage.prompt)) || '' }];
+            const html = (tabs[window._passageTab] && tabs[window._passageTab].html) || '';
+            const doc = document.querySelector('.passage-doc-scroll .passage-doc');
+            if (doc) doc.innerHTML = html;
+            document.querySelectorAll('[data-pass-tab]').forEach(b => b.classList.toggle('active', Number(b.dataset.passTab) === window._passageTab));
+          }
         };
       });
       if (endBtn) endBtn.onclick = async (e) => {

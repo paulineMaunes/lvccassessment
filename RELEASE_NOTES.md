@@ -671,3 +671,15 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Re-evaluate: edit correct answer fields
 - Passage take: fallback to nested questions + passageHtml
 - MC/TF dynamic font size (short vs long text)
+
+## v1.5.77
+- Firestore 1MB is a hard per-document limit (Blaze does not raise it). Large assessments auto-upload images to Firebase Storage then save the doc with https URLs.
+- Match/Categorize: scoring defaults to 1 point per correct pair/item; total normalized on save; section test uses gradeAnswers points
+- Passage: questions linked to tabs (show/hide on tab switch in config + student); points on each nested question; DOM sync before every render/save to stop content loss
+- Add Question (passage) and table rows scroll to the new item
+- Duplicate button on all question types
+
+## v1.5.78
+- Mobile students must use Google Chrome only (Safari / Samsung Internet / Firefox / Edge mobile blocked before exam start)
+- Desktop still allows Chrome or Edge
+- Keep existing Storage rules (image/*, 5MB, assessments/{examId}/**) — no change required

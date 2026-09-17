@@ -113,8 +113,22 @@ const Monitor = {
   isSupportedBrowser() {
     const ua = navigator.userAgent || '';
     const isEdge = ua.indexOf('Edg/') >= 0 || ua.indexOf('EdgiOS/') >= 0;
+    // Chrome on Android/desktop, or Chrome on iOS (CriOS). Exclude Opera/Edge.
     const isChrome = (ua.indexOf('Chrome/') >= 0 || ua.indexOf('CriOS/') >= 0) && ua.indexOf('OPR/') < 0 && !isEdge;
+    const mobile = this.deviceType === 'mobile'
+      || /Android|iPhone|iPad|iPod|Mobile/i.test(ua)
+      || (navigator.maxTouchPoints > 1 && window.innerWidth < 900);
+    // Mobile students: Google Chrome only (not Safari, Samsung Internet, Firefox, Edge mobile)
+    if (mobile) return isChrome;
+    // Desktop: Chrome or Edge
     return isChrome || isEdge;
+  },
+
+  isMobileDevice() {
+    const ua = navigator.userAgent || '';
+    return this.deviceType === 'mobile'
+      || /Android|iPhone|iPad|iPod|Mobile/i.test(ua)
+      || (navigator.maxTouchPoints > 1 && window.innerWidth < 900);
   },
 
   
@@ -247,7 +261,7 @@ const Monitor = {
             <p>Your screen may be monitored so instructors can protect exam integrity. Do not exit full screen, switch tabs, or open other windows.</p>
             <p>Violations are logged in real time. Screen stills may be captured for monitoring when a violation is detected.</p>
             <p>By continuing, you agree to these rules and to remain in the assessment environment until you submit or time expires.</p>
-            <p class="monitor-security-notice"><strong>Security Notice:</strong> This assessment portal requires <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>. Please copy the link and open it in a supported browser.</p>
+            <p class="monitor-security-notice"><strong>Security Notice:</strong> On <strong>mobile</strong>, this assessment requires <strong>Google Chrome</strong> only. On desktop, use Google Chrome or Microsoft Edge. Please open the link in the correct browser.</p>
           </div>
           <p class="monitor-gate-device">Device detected: <strong>${this.deviceType}</strong></p>
           <div class="monitor-gate-center">
@@ -273,8 +287,8 @@ const Monitor = {
           if (!this.isSupportedBrowser()) {
             if (window.UI) {
               await UI.alert(
-                'This assessment portal requires Google Chrome or Microsoft Edge. Please copy the link and open it in a supported browser.',
-                'Unsupported browser'
+                'On a phone or tablet you must use Google Chrome to take this assessment. Install or open Chrome, paste the assessment link, and try again.',
+                'Chrome required on mobile'
               );
             }
             btn.disabled = false;
