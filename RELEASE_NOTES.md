@@ -743,3 +743,15 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Last question → View Overview (edit answers) then Submit with loading blur
 - Submit errors keep student on page so they can retry; answers remain saved
 - Retake with locked previous answers: answered items locked; jump to unanswered
+
+## v1.5.88
+- Email templates drive continue/retake behavior:
+  - quota_retake / unattempted_retake → unanswered only (previous answers locked)
+  - continue_progress → resume, skip answered, overview before final submit
+  - failed_retake / instructor_retake → full fresh attempt (all questions, new score)
+- examRetakes stores templateId + mode flags; applyRetakeOptions enforces them on join
+
+## v1.5.89
+- Reopen (new or previous, even 1 student): always show publish schedule (start/end/time limit/randomize) and set assessment Live
+- Reopen Previous student picker: search box + filters ≥5 unattempted and ≥5 wrong
+- Sessions detail: Export all results (ZIP of per-student PDFs) and Export all integrity (ZIP of per-student PDFs)

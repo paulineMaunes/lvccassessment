@@ -1,33 +1,120 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.87
+ * v1.5.89
  */
 
 const App = {
 
   /** Public portal URL for links/QR in emails (set once in Settings or auto-detect) */
+
+  /** Map email template → retake/continue behavior */
+  retakeBehaviorFromTemplate(templateId) {
+    const id = String(templateId || '');
+    // Show only unanswered (carry + lock answered)
+    if (id === 'quota_retake' || id === 'unattempted_retake') {
+      return {
+        retakeMode: 'unanswered_only',
+        carryAnswers: true,
+        lockPreviousAnswers: true,
+        showOnlyUnanswered: true,
+        freshSession: false
+      };
+    }
+    // Resume progress: skip answered, overview before final submit
+    if (id === 'continue_progress') {
+      return {
+        retakeMode: 'continue_progress',
+        carryAnswers: true,
+        lockPreviousAnswers: false, // can edit via overview
+        showOnlyUnanswered: true,   // skip answered in flow
+        freshSession: false
+      };
+    }
+    // Full fresh retake
+    if (id === 'failed_retake' || id === 'instructor_retake') {
+      return {
+        retakeMode: 'fresh',
+        carryAnswers: false,
+        lockPreviousAnswers: false,
+        showOnlyUnanswered: false,
+        freshSession: true
+      };
+    }
+    // default safe: continue unanswered locked
+    return {
+      retakeMode: 'unanswered_only',
+      carryAnswers: true,
+      lockPreviousAnswers: true,
+      showOnlyUnanswered: true,
+      freshSession: false
+    };
+  },
+
   async applyRetakeOptions(examId, email, sessionPayload) {
     try {
       const id = examId + '_' + String(email || '').toLowerCase().replace(/[^a-z0-9]/gi, '_');
       const snap = await window.db.collection('examRetakes').doc(id).get();
       if (!snap.exists || !snap.data().allowed) return sessionPayload;
       const r = snap.data();
-      sessionPayload.retakeMode = r.retakeMode || 'fresh';
-      sessionPayload.lockPreviousAnswers = !!r.lockPreviousAnswers;
-      if (r.carryAnswers && r.previousSessionId) {
+      // Prefer explicit template behavior when templateId was stored
+      const beh = (r.templateId && this.retakeBehaviorFromTemplate)
+        ? this.retakeBehaviorFromTemplate(r.templateId)
+        : {
+            retakeMode: r.retakeMode || 'fresh',
+            carryAnswers: !!r.carryAnswers,
+            lockPreviousAnswers: !!r.lockPreviousAnswers,
+            showOnlyUnanswered: !!(r.showOnlyUnanswered || r.lockPreviousAnswers || r.retakeMode === 'unanswered_only' || r.retakeMode === 'continue_progress'),
+            freshSession: (r.retakeMode === 'fresh') || (!r.carryAnswers && !r.lockPreviousAnswers)
+          };
+      // Allow stored flags to override if set without template
+      if (r.retakeMode && !r.templateId) {
+        if (r.retakeMode === 'fresh') Object.assign(beh, this.retakeBehaviorFromTemplate('failed_retake'));
+        if (r.retakeMode === 'lock' || r.retakeMode === 'unanswered_only') Object.assign(beh, this.retakeBehaviorFromTemplate('quota_retake'));
+        if (r.retakeMode === 'edit' || r.retakeMode === 'continue_progress') Object.assign(beh, this.retakeBehaviorFromTemplate('continue_progress'));
+      }
+
+      sessionPayload.retakeMode = beh.retakeMode;
+      sessionPayload.lockPreviousAnswers = !!beh.lockPreviousAnswers;
+      sessionPayload.showOnlyUnanswered = !!beh.showOnlyUnanswered;
+      sessionPayload.templateId = r.templateId || null;
+
+      if (beh.freshSession) {
+        sessionPayload.answers = {};
+        sessionPayload.answersLocked = false;
+        sessionPayload.lockedAnswerKeys = [];
+        sessionPayload.showOnlyUnanswered = false;
+      } else if (beh.carryAnswers && r.previousSessionId) {
         const prev = await window.db.collection('sessions').doc(r.previousSessionId).get();
         if (prev.exists) {
           const pd = prev.data() || {};
-          sessionPayload.answers = pd.answers || {};
+          const prevAnswers = pd.answers || {};
+          sessionPayload.answers = { ...prevAnswers };
           sessionPayload.code = pd.code || sessionPayload.code;
-          if (r.lockPreviousAnswers) {
+          // Keys that already have a real answer → lock and/or skip
+          const answeredKeys = Object.keys(prevAnswers).filter(k => {
+            const v = prevAnswers[k];
+            if (v === undefined || v === null || v === '') return false;
+            if (v === null) return true; // explicitly skipped still "done"
+            if (typeof v === 'object' && !Array.isArray(v) && !Object.keys(v).length) return false;
+            if (Array.isArray(v) && !v.length) return false;
+            return true;
+          });
+          sessionPayload.lockedAnswerKeys = answeredKeys;
+          if (beh.lockPreviousAnswers) {
             sessionPayload.answersLocked = true;
-            sessionPayload.lockedAnswerKeys = Object.keys(pd.answers || {});
+          } else {
+            // continue_progress: skip in flow but allow edit via overview
+            sessionPayload.answersLocked = false;
           }
+          sessionPayload.showOnlyUnanswered = !!beh.showOnlyUnanswered;
+          sessionPayload.previousSessionId = r.previousSessionId;
         }
       }
       // consume one-time allow
-      await window.db.collection('examRetakes').doc(id).update({ allowed: false, consumedAt: firebase.firestore.FieldValue.serverTimestamp() }).catch(() => {});
+      await window.db.collection('examRetakes').doc(id).update({
+        allowed: false,
+        consumedAt: firebase.firestore.FieldValue.serverTimestamp()
+      }).catch(() => {});
     } catch (e) { console.warn('retake options', e); }
     return sessionPayload;
   },
@@ -72,7 +159,7 @@ const App = {
   EMAIL_TEMPLATES: {
     quota_retake: {
       id: 'quota_retake',
-      label: 'Continue — answers not saved (system limit)',
+      label: 'Continue — answers not saved (system limit) · unanswered only',
       subject: (t) => `[LVCC] Continue your assessment: ${t}`,
       blurb: (ctx) => {
         const n = ctx && ctx.unattempted != null ? Number(ctx.unattempted) : null;
@@ -85,25 +172,25 @@ const App = {
     },
     failed_retake: {
       id: 'failed_retake',
-      label: 'Retake — did not meet the required score',
+      label: 'Retake — did not meet the required score · full fresh attempt',
       subject: (t) => `[LVCC] Retake required: ${t}`,
       blurb: 'Your instructor is asking you to retake this assessment because the previous result did not meet the required standard.'
     },
     unattempted_retake: {
       id: 'unattempted_retake',
-      label: 'Retake — many items left blank',
+      label: 'Retake — many items left blank · unanswered only',
       subject: (t) => `[LVCC] Complete / retake: ${t}`,
       blurb: 'Many items were left unattempted. Your instructor asks you to retake (or continue, if allowed) so your result is complete.'
     },
     instructor_retake: {
       id: 'instructor_retake',
-      label: 'Retake — requested by instructor',
+      label: 'Retake — requested by instructor · full fresh attempt',
       subject: (t) => `[LVCC] Please retake: ${t}`,
       blurb: 'Your instructor is requesting that you retake this assessment.'
     },
     continue_progress: {
       id: 'continue_progress',
-      label: 'Continue — resume saved progress',
+      label: 'Continue — resume saved progress · skip answered + overview',
       subject: (t) => `[LVCC] Continue your assessment: ${t}`,
       blurb: 'You may return to the assessment and continue with your saved progress. Use the code or button below.'
     }
@@ -535,7 +622,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.87</div>
+          <div class="app-version">Build v1.5.89</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -677,7 +764,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.87</div>
+              <div class="app-version">v1.5.89</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -4140,12 +4227,13 @@ const App = {
         w.style.zIndex = '50000';
         const rows = list.map(s => {
           const st = this.computeAttemptStats(s, examMeta) || {};
-          const total = st.total != null ? st.total : '—';
-          const correct = st.correct != null ? st.correct : '—';
-          const wrong = st.incorrect != null ? st.incorrect : '—';
-          const un = st.unattempted != null ? st.unattempted : '—';
+          const total = st.total != null ? st.total : 0;
+          const correct = st.correct != null ? st.correct : 0;
+          const wrong = st.incorrect != null ? st.incorrect : 0;
+          const un = st.unattempted != null ? st.unattempted : 0;
           const acc = st.accuracy != null ? st.accuracy + '%' : '—';
-          return `<tr>
+          const search = ((s.studentName || '') + ' ' + (s.studentEmail || '')).toLowerCase();
+          return `<tr class="rp-row" data-un="${un}" data-wrong="${wrong}" data-search="${escapeHtml(search)}">
             <td><input type="checkbox" class="rp-sid" value="${s.id}"/></td>
             <td><strong>${escapeHtml(s.studentName || '—')}</strong><br/><span class="text-muted" style="font-size:0.78rem">${escapeHtml(s.studentEmail || '')}</span></td>
             <td>${total}</td><td>${correct}</td><td>${wrong}</td><td>${un}</td><td>${acc}</td>
@@ -4154,11 +4242,20 @@ const App = {
         }).join('');
         w.innerHTML = `<div class="modal ui-modal" style="max-width:min(960px,96vw);max-height:92vh;display:flex;flex-direction:column;width:96vw">
           <h2>Select students to continue</h2>
-          <p class="ui-modal-body">Checked students can rejoin with saved progress. Optionally email them before continuing.</p>
-          <div style="overflow:auto;flex:1;max-height:55vh">
+          <p class="ui-modal-body">Checked students can rejoin with saved progress. Next you will set the live schedule (start, end, time limit, randomize).</p>
+          <div style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;margin:0.5rem 0">
+            <input type="search" id="rp-search" class="form-control" placeholder="Search name or email…" style="flex:1;min-width:180px" />
+            <label style="cursor:pointer;display:inline-flex;align-items:center;gap:0.35rem;font-size:0.85rem">
+              <input type="checkbox" id="rp-f-un5" /> ≥5 unattempted
+            </label>
+            <label style="cursor:pointer;display:inline-flex;align-items:center;gap:0.35rem;font-size:0.85rem">
+              <input type="checkbox" id="rp-f-wrong5" /> ≥5 wrong
+            </label>
+          </div>
+          <div style="overflow:auto;flex:1;max-height:50vh">
             <table class="table" style="width:100%;font-size:0.88rem">
               <thead><tr>
-                <th><input type="checkbox" id="rp-all" title="Select all"/></th>
+                <th><input type="checkbox" id="rp-all" title="Select all visible"/></th>
                 <th>Full name</th><th>Total</th><th>Correct</th><th>Wrong</th><th>Unattempted</th><th>Accuracy</th><th></th>
               </tr></thead>
               <tbody>${rows}</tbody>
@@ -4171,8 +4268,30 @@ const App = {
           </div>
         </div>`;
         root.appendChild(w);
+        const applyRpFilter = () => {
+          const q = (w.querySelector('#rp-search')?.value || '').toLowerCase().trim();
+          const un5 = !!w.querySelector('#rp-f-un5')?.checked;
+          const w5 = !!w.querySelector('#rp-f-wrong5')?.checked;
+          w.querySelectorAll('.rp-row').forEach(tr => {
+            const un = Number(tr.getAttribute('data-un') || 0);
+            const wrong = Number(tr.getAttribute('data-wrong') || 0);
+            const search = (tr.getAttribute('data-search') || '');
+            let ok = true;
+            if (q && !search.includes(q)) ok = false;
+            if (un5 && un < 5) ok = false;
+            if (w5 && wrong < 5) ok = false;
+            tr.style.display = ok ? '' : 'none';
+          });
+        };
+        w.querySelector('#rp-search')?.addEventListener('input', applyRpFilter);
+        w.querySelector('#rp-f-un5')?.addEventListener('change', applyRpFilter);
+        w.querySelector('#rp-f-wrong5')?.addEventListener('change', applyRpFilter);
         w.querySelector('#rp-all').onchange = (e) => {
-          w.querySelectorAll('.rp-sid').forEach(c => { c.checked = e.target.checked; });
+          w.querySelectorAll('.rp-row').forEach(tr => {
+            if (tr.style.display === 'none') return;
+            const c = tr.querySelector('.rp-sid');
+            if (c) c.checked = e.target.checked;
+          });
         };
         w.querySelectorAll('.rp-view').forEach(btn => {
           btn.onclick = async (e) => {
@@ -4262,6 +4381,10 @@ const App = {
         };
       });
       if (!selected || !selected.length) return;
+      // Publish schedule popup → set Live (even for 1 student / reopen previous)
+      const sched = await this.pickSchedule();
+      if (!sched) return;
+      try { UI.showLoading('Reopening session…'); } catch (_) {}
       const batch = window.db.batch();
       selected.forEach(id => {
         batch.update(window.db.collection('sessions').doc(id), {
@@ -4272,19 +4395,29 @@ const App = {
           monitoringStopped: false,
           teacherEnded: false,
           reopenedPrevious: true,
-          reopenedAt: firebase.firestore.FieldValue.serverTimestamp()
+          reopenedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          endsAt: sched.endAt
         });
       });
       const exam = examMeta || await Exam.getExam(examId);
-      const endAt = exam?.endAt && exam.endAt > Date.now() ? exam.endAt : Date.now() + (exam?.durationMinutes || 60) * 60000;
-      await window.db.collection('exams').doc(examId).update({
+      const payload = {
         active: true,
-        status: 'published', contentVersion: Date.now(),
-        endAt,
-        startAt: Math.min(exam?.startAt || Date.now(), Date.now())
-      });
+        status: 'published',
+        contentVersion: Date.now(),
+        startAt: sched.startAt,
+        endAt: sched.endAt,
+        durationMinutes: sched.durationMinutes || Math.max(1, Math.round((sched.endAt - sched.startAt) / 60000)),
+        liveWindowOpen: true,
+        reopenedAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+      if (sched.randomizeQuestions != null) payload.randomizeQuestions = !!sched.randomizeQuestions;
+      await window.db.collection('exams').doc(examId).update(payload);
       await batch.commit();
-      await UI.alert(selected.length + ' student(s) can continue with their saved progress using the same assessment code.', 'Reopen Previous');
+      try { UI.hideLoading(); } catch (_) {}
+      await UI.alert(
+        selected.length + ' student(s) can continue. Assessment is Live until ' + new Date(sched.endAt).toLocaleString() + '.',
+        'Reopen Previous'
+      );
       try { this.showInstructorHome(); } catch (_) {}
     } catch (e) {
       console.error(e);
@@ -4339,7 +4472,9 @@ const App = {
         durationMinutes: sched.durationMinutes || Math.max(1, Math.round((sched.endAt - sched.startAt) / 60000)),
         assessmentCode,
         sessionWave: nextWave,
-        reopenToken: nextWave
+        reopenToken: nextWave,
+        liveWindowOpen: true,
+        reopenedAt: firebase.firestore.FieldValue.serverTimestamp()
       };
       if (sched.randomizeQuestions != null) payload.randomizeQuestions = !!sched.randomizeQuestions;
       await Exam.updateExam(examId, payload);
@@ -4520,13 +4655,18 @@ const App = {
       let sessions = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(s => !s.isMock);
       if (runId) sessions = sessions.filter(s => !s.runId || s.runId === runId);
       const title = exam?.title || sessions[0]?.examTitle || 'Session';
+      const _runId = runId || '';
       this.renderShell(`
         <div class="card-header page-header-responsive">
           <div>
             <h2 class="page-title">${escapeHtml(title)}</h2>
             <p class="page-subtitle text-muted">${sessions.length} participant(s)</p>
           </div>
-          <button class="btn btn-ghost" onclick="App.showSessionsPage()">← Sessions</button>
+          <div class="action-btns" style="flex-wrap:wrap;gap:0.5rem">
+            <button type="button" class="btn btn-primary" id="sess-export-results-zip">Export all results (ZIP)</button>
+            <button type="button" class="btn btn-ghost" id="sess-export-integrity-zip">Export all integrity (ZIP)</button>
+            <button type="button" class="btn btn-ghost" onclick="App.showSessionsPage()">← Sessions</button>
+          </div>
         </div>
         <input type="search" id="sess-detail-filter" class="form-control" placeholder="Search student name or email…" style="max-width:420px;margin:0.75rem 0" />
         <div class="table-wrap mt-2"><table class="table" id="sess-detail-table">
@@ -4545,6 +4685,12 @@ const App = {
         document.querySelectorAll('.sess-student-row').forEach(tr => {
           tr.style.display = !q || (tr.textContent || '').toLowerCase().includes(q) ? '' : 'none';
         });
+      });
+      document.getElementById('sess-export-results-zip')?.addEventListener('click', () => {
+        this.exportSessionResultsZip(examId, _runId || runId || null);
+      });
+      document.getElementById('sess-export-integrity-zip')?.addEventListener('click', () => {
+        this.exportSessionIntegrityZip(examId, _runId || runId || null);
       });
       document.querySelectorAll('[data-sid]').forEach(btn => {
         btn.onclick = () => this.showStudentSessionIntegrity(btn.getAttribute('data-exam'), btn.getAttribute('data-sid'), btn.getAttribute('data-sname'), btn.getAttribute('data-semail'));
@@ -5335,6 +5481,213 @@ const App = {
 
 
 
+
+
+  async ensureJSZip() {
+    if (window.JSZip) return window.JSZip;
+    const sources = [
+      'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+      'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js'
+    ];
+    for (const src of sources) {
+      try {
+        await new Promise((resolve, reject) => {
+          const t = setTimeout(() => reject(new Error('timeout')), 8000);
+          const s = document.createElement('script');
+          s.src = src;
+          s.onload = () => { clearTimeout(t); resolve(); };
+          s.onerror = () => { clearTimeout(t); reject(new Error('fail')); };
+          document.head.appendChild(s);
+        });
+        if (window.JSZip) return window.JSZip;
+      } catch (_) {}
+    }
+    throw new Error('JSZip library not available. Check network/CDN.');
+  },
+
+  async buildStudentResultPdfBlob(session, exam) {
+    const JsPDF = await this.ensureJsPdf();
+    const doc = new JsPDF({ unit: 'mm', format: 'a4' });
+    const name = session.studentName || session.studentEmail || 'Student';
+    const title = exam?.title || session.examTitle || 'Assessment';
+    const st = this.computeAttemptStats(session, exam) || {};
+    const pct = st.accuracy != null ? st.accuracy : 0;
+    let y = 20;
+    doc.setFontSize(14);
+    doc.text('ASSESSMENT RESULTS', 14, y); y += 8;
+    doc.setFontSize(11);
+    doc.text(String(title).slice(0, 90), 14, y); y += 7;
+    doc.setFontSize(10);
+    doc.text(String(name) + (session.studentEmail ? ' · ' + session.studentEmail : ''), 14, y); y += 7;
+    doc.text(
+      'Total: ' + (st.total||0) + '  Correct: ' + (st.correct||0) +
+      '  Incorrect: ' + (st.incorrect||0) + '  Unattempted: ' + (st.unattempted||0) +
+      '  Accuracy: ' + pct + '%',
+      14, y
+    ); y += 10;
+    const qs = (exam && window.Regular && Regular.flattenQuestions)
+      ? (Regular.flattenQuestions(exam) || [])
+      : (session.questionsSnapshot || []);
+    const answers = session.answers || {};
+    doc.setFontSize(9);
+    (qs || []).forEach((q, i) => {
+      if (!q) return;
+      if (y > 275) { doc.addPage(); y = 16; }
+      const prompt = String(q.prompt || q.statement || q.type || 'Question').slice(0, 110);
+      let resp = answers[q.id];
+      let respStr = '—';
+      try {
+        if (resp == null || resp === '') respStr = '—';
+        else if (typeof resp === 'string' || typeof resp === 'number') respStr = String(resp);
+        else if (Array.isArray(resp)) respStr = resp.join(', ');
+        else respStr = JSON.stringify(resp).slice(0, 120);
+      } catch (_) {}
+      const lines = doc.splitTextToSize((i + 1) + '. ' + prompt, 182);
+      doc.text(lines, 14, y); y += lines.length * 4.5;
+      const rlines = doc.splitTextToSize('Response: ' + respStr, 182);
+      doc.text(rlines, 14, y); y += rlines.length * 4.5 + 3;
+    });
+    return doc.output('blob');
+  },
+
+  async buildStudentIntegrityPdfBlob(session, exam, events) {
+    const JsPDF = await this.ensureJsPdf();
+    const doc = new JsPDF({ unit: 'mm', format: 'a4' });
+    const name = session.studentName || session.studentEmail || 'Student';
+    const title = exam?.title || 'Assessment';
+    let y = 18;
+    doc.setFontSize(14);
+    doc.text('INTEGRITY ISSUES', 14, y); y += 8;
+    doc.setFontSize(11);
+    doc.text(String(title).slice(0, 90), 14, y); y += 6;
+    doc.setFontSize(10);
+    doc.text(String(name) + (session.studentEmail ? ' · ' + session.studentEmail : ''), 14, y); y += 8;
+    const list = (events || []).slice().sort((a, b) => {
+      const ta = a.createdAt?.toMillis?.() || Date.parse(a.timestamp || 0) || 0;
+      const tb = b.createdAt?.toMillis?.() || Date.parse(b.timestamp || 0) || 0;
+      return ta - tb;
+    });
+    if (!list.length) {
+      doc.text('No integrity issues recorded for this student.', 14, y);
+    } else {
+      doc.setFontSize(9);
+      list.forEach((n, i) => {
+        if (y > 275) { doc.addPage(); y = 16; }
+        const time = n.createdAt?.toDate ? n.createdAt.toDate().toLocaleString()
+          : (n.timestamp ? new Date(n.timestamp).toLocaleString() : '');
+        const issue = String(n.type || n.details || n.message || 'issue');
+        const line = (i + 1) + '. [' + time + '] ' + issue + (n.details ? ' — ' + String(n.details).slice(0, 80) : '');
+        const lines = doc.splitTextToSize(line, 182);
+        doc.text(lines, 14, y);
+        y += lines.length * 4.5 + 2;
+      });
+    }
+    return doc.output('blob');
+  },
+
+  async exportSessionResultsZip(examId, runId) {
+    try {
+      UI.showLoading('Building result PDFs…');
+      const exam = await Exam.getExam(examId);
+      const snap = await window.db.collection('sessions').where('examId', '==', examId).get();
+      let sessions = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+        .filter(s => !s.isMock && !String(s.id).startsWith('test_'));
+      if (runId) sessions = sessions.filter(s => !s.runId || s.runId === runId);
+      sessions = sessions.filter(s => s.status === 'submitted' || s.status === 'ended' || s.status === 'graded' || s.answers);
+      if (!sessions.length) {
+        UI.hideLoading();
+        await UI.alert('No student results found for this session.', 'Export');
+        return;
+      }
+      const JSZip = await this.ensureJSZip();
+      const zip = new JSZip();
+      for (let i = 0; i < sessions.length; i++) {
+        const s = sessions[i];
+        try {
+          UI.showLoading('PDF ' + (i + 1) + '/' + sessions.length + '…');
+          const blob = await this.buildStudentResultPdfBlob(s, exam);
+          const safe = String(s.studentName || s.studentEmail || s.id).replace(/[^\w\-]+/g, '_').slice(0, 40);
+          zip.file('Result_' + safe + '_' + String(s.id).slice(0, 6) + '.pdf', blob);
+        } catch (e) { console.warn('pdf student', s.id, e); }
+      }
+      const out = await zip.generateAsync({ type: 'blob' });
+      UI.hideLoading();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(out);
+      a.download = 'Assessment_Results_' + String(exam?.title || examId).replace(/[^\w\-]+/g, '_').slice(0, 40) + '.zip';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      await UI.alert('Downloaded ZIP with result PDF(s).', 'Export');
+    } catch (e) {
+      try { UI.hideLoading(); } catch (_) {}
+      console.error(e);
+      await UI.alert(e.message || String(e), 'Export failed');
+    }
+  },
+
+  async exportSessionIntegrityZip(examId, runId) {
+    try {
+      UI.showLoading('Building integrity PDFs…');
+      const exam = await Exam.getExam(examId);
+      const snap = await window.db.collection('sessions').where('examId', '==', examId).get();
+      let sessions = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+        .filter(s => !s.isMock && !String(s.id).startsWith('test_'));
+      if (runId) sessions = sessions.filter(s => !s.runId || s.runId === runId);
+      if (!sessions.length) {
+        UI.hideLoading();
+        await UI.alert('No students in this session.', 'Export');
+        return;
+      }
+      let notifs = [];
+      try {
+        const nsnap = await window.db.collection('notifications').where('examId', '==', examId).limit(2000).get();
+        notifs = nsnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      } catch (_) {}
+      try {
+        const hsnap = await window.db.collection('integrityHistory').where('examId', '==', examId).limit(2000).get();
+        notifs = notifs.concat(hsnap.docs.map(d => ({ id: d.id, ...d.data() })));
+      } catch (_) {}
+      const bySession = {};
+      notifs.forEach(n => {
+        const sid = n.sessionId || '';
+        if (!sid) return;
+        if (!bySession[sid]) bySession[sid] = [];
+        bySession[sid].push(n);
+      });
+      const JSZip = await this.ensureJSZip();
+      const zip = new JSZip();
+      let count = 0;
+      for (let i = 0; i < sessions.length; i++) {
+        const s = sessions[i];
+        const events = (bySession[s.id] || []).concat(s.events || []);
+        if (!events.length) continue;
+        try {
+          UI.showLoading('Integrity PDF ' + (i + 1) + '/' + sessions.length + '…');
+          const blob = await this.buildStudentIntegrityPdfBlob(s, exam, events);
+          const safe = String(s.studentName || s.studentEmail || s.id).replace(/[^\w\-]+/g, '_').slice(0, 40);
+          zip.file('Integrity_' + safe + '_' + String(s.id).slice(0, 6) + '.pdf', blob);
+          count++;
+        } catch (e) { console.warn('integrity pdf', s.id, e); }
+      }
+      if (!count) {
+        UI.hideLoading();
+        await UI.alert('No integrity issues found to export.', 'Export');
+        return;
+      }
+      const out = await zip.generateAsync({ type: 'blob' });
+      UI.hideLoading();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(out);
+      a.download = 'Integrity_Issues_' + String(exam?.title || examId).replace(/[^\w\-]+/g, '_').slice(0, 40) + '.zip';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      await UI.alert('Downloaded ZIP with ' + count + ' integrity PDF(s).', 'Export');
+    } catch (e) {
+      try { UI.hideLoading(); } catch (_) {}
+      console.error(e);
+      await UI.alert(e.message || String(e), 'Export failed');
+    }
+  },
 
   async ensureJsPdf() {
     const grab = () => {
@@ -7042,12 +7395,15 @@ const App = {
         if (session && session.examId && session.studentEmail) {
           try {
             session = await this.applyRetakeOptions(session.examId, session.studentEmail, session);
-            if (session.id && (session.answers || session.retakeMode)) {
+            if (session.id && (session.answers || session.retakeMode || session.showOnlyUnanswered)) {
               await window.db.collection('sessions').doc(session.id).update({
                 answers: session.answers || {},
                 retakeMode: session.retakeMode || null,
                 lockPreviousAnswers: !!session.lockPreviousAnswers,
-                answersLocked: !!session.answersLocked
+                answersLocked: !!session.answersLocked,
+                showOnlyUnanswered: !!session.showOnlyUnanswered,
+                lockedAnswerKeys: session.lockedAnswerKeys || [],
+                templateId: session.templateId || null
               }).catch(() => {});
             }
           } catch (_) {}
@@ -7741,15 +8097,23 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
     let answers = { ...(session.answers || {}) };
     window._takeAnswers = answers;
     const lockedKeys = new Set();
+    const preferUnanswered = !!(session.showOnlyUnanswered || session.retakeMode === 'unanswered_only' || session.retakeMode === 'continue_progress' || session.answersLocked || session.lockPreviousAnswers);
     if (session.answersLocked || session.lockPreviousAnswers) {
       const keys = session.lockedAnswerKeys || Object.keys(answers);
       keys.forEach(k => {
         const v = answers[k];
         if (v !== undefined && v !== null && v !== '') lockedKeys.add(String(k));
       });
+    } else if (preferUnanswered && session.lockedAnswerKeys) {
+      // continue_progress: skip answered but not hard-lock (overview can edit)
+      session.lockedAnswerKeys.forEach(k => {
+        const v = answers[k];
+        if (v !== undefined && v !== null && v !== '') lockedKeys.add(String(k));
+      });
     }
-    window._lockedAnswerKeys = lockedKeys;
-    window._preferUnansweredOnly = lockedKeys.size > 0;
+    window._lockedAnswerKeys = (session.answersLocked || session.lockPreviousAnswers) ? lockedKeys : new Set();
+    window._preferUnansweredOnly = preferUnanswered;
+    window._retakeMode = session.retakeMode || null;
     window._passageTab = 0;
     window._seenSectionIntro = null;
     window._pendingSectionIntro = null;
