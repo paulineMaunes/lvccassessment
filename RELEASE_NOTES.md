@@ -768,3 +768,7 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Settings: Open buttons & links in a new tab
 - Courses & subjects page: add course/subject, enroll students by email (Firestore: courses, subjects, enrollments)
 - Reopened sessions: per-student time limit from each student's start/re-entry (durationMinutes), capped by window end
+
+## v1.5.92
+- Timer: time limit (minutes) is per-student from start/continue → "Time's up!" auto-submit; assessment end datetime is window close → "Assessment window closed". No longer shows instructor "Assessment Ended" for normal time limit.
+- Courses: add/edit/delete course & subject; enroll via checkbox grid (filter + optional extra emails)

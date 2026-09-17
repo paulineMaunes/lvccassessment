@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.91
+ * v1.5.92
  */
 
 const App = {
@@ -634,7 +634,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.91</div>
+          <div class="app-version">Build v1.5.92</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -780,7 +780,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.91</div>
+              <div class="app-version">v1.5.92</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -4572,7 +4572,7 @@ const App = {
       <div class="card-header page-header-responsive">
         <div>
           <h2 class="page-title">Courses & subjects</h2>
-          <p class="page-subtitle text-muted">Create courses, subjects, and enroll students</p>
+          <p class="page-subtitle text-muted">Add, edit, or delete courses and subjects. Enroll students with checkboxes.</p>
         </div>
         <div class="action-btns">
           <button type="button" class="btn btn-primary" id="btn-add-course">Add course</button>
@@ -4590,10 +4590,12 @@ const App = {
     const el = document.getElementById('courses-root');
     if (!el) return;
     try {
-      const cSnap = await window.db.collection('courses').get();
-      const sSnap = await window.db.collection('subjects').get();
-      const eSnap = await window.db.collection('enrollments').limit(500).get();
-      const courses = cSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const [cSnap, sSnap, eSnap] = await Promise.all([
+        window.db.collection('courses').get(),
+        window.db.collection('subjects').get(),
+        window.db.collection('enrollments').limit(800).get()
+      ]);
+      const courses = cSnap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
       const subjects = sSnap.docs.map(d => ({ id: d.id, ...d.data() }));
       const enrollments = eSnap.docs.map(d => ({ id: d.id, ...d.data() }));
       const byCourse = {};
@@ -4602,34 +4604,62 @@ const App = {
         if (!byCourse[cid]) byCourse[cid] = [];
         byCourse[cid].push(s);
       });
-      el.innerHTML = courses.length ? courses.map(c => {
-        const subs = byCourse[c.id] || [];
-        return `<div class="card" style="margin-bottom:1rem;padding:1rem">
-          <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem">
-            <strong>${escapeHtml(c.name || 'Course')}</strong>
-            <span class="text-muted">${escapeHtml(c.code || '')}</span>
+      if (!courses.length) {
+        el.innerHTML = '<p class="text-muted">No courses yet. Click <strong>Add course</strong>.</p>';
+        return;
+      }
+      el.innerHTML = courses.map(c => {
+        const subs = (byCourse[c.id] || []).sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+        return `<div class="card" style="margin-bottom:1rem;padding:1rem" data-course-id="${c.id}">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem">
+            <div>
+              <strong>${escapeHtml(c.name || 'Course')}</strong>
+              <span class="text-muted" style="margin-left:0.5rem">${escapeHtml(c.code || '')}</span>
+            </div>
+            <div class="action-btns" style="gap:0.35rem">
+              <button type="button" class="btn btn-sm btn-ghost" data-edit-course="${c.id}">Edit</button>
+              <button type="button" class="btn btn-sm btn-ghost" data-del-course="${c.id}">Delete</button>
+            </div>
           </div>
-          <ul style="margin:0.75rem 0 0;padding-left:1.1rem">
+          <ul style="margin:0.75rem 0 0;padding-left:0;list-style:none">
             ${subs.map(s => {
               const en = enrollments.filter(e => e.subjectId === s.id);
-              return `<li style="margin-bottom:0.5rem">
-                <strong>${escapeHtml(s.name || 'Subject')}</strong>
-                <span class="text-muted"> · ${en.length} enrolled</span>
-                <button type="button" class="btn btn-sm btn-ghost" data-enroll="${s.id}" data-sname="${escapeHtml(s.name || '')}">Enroll</button>
-                <button type="button" class="btn btn-sm btn-ghost" data-view-enroll="${s.id}">View</button>
+              return `<li style="margin-bottom:0.65rem;padding:0.5rem 0.65rem;border:1px solid var(--border,#e2e8f0);border-radius:8px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:0.5rem">
+                <div>
+                  <strong>${escapeHtml(s.name || 'Subject')}</strong>
+                  <span class="text-muted"> · ${en.length} enrolled</span>
+                </div>
+                <div class="action-btns" style="gap:0.35rem">
+                  <button type="button" class="btn btn-sm btn-primary" data-enroll="${s.id}" data-sname="${escapeHtml(s.name || '')}">Enroll students</button>
+                  <button type="button" class="btn btn-sm btn-ghost" data-view-enroll="${s.id}">View roster</button>
+                  <button type="button" class="btn btn-sm btn-ghost" data-edit-subject="${s.id}">Edit</button>
+                  <button type="button" class="btn btn-sm btn-ghost" data-del-subject="${s.id}">Delete</button>
+                </div>
               </li>`;
             }).join('') || '<li class="text-muted">No subjects yet</li>'}
           </ul>
         </div>`;
-      }).join('') : '<p class="text-muted">No courses yet. Click Add course.</p>';
+      }).join('');
       el.querySelectorAll('[data-enroll]').forEach(btn => {
-        btn.onclick = () => this.enrollStudentsPrompt(btn.getAttribute('data-enroll'), btn.getAttribute('data-sname'));
+        btn.onclick = () => this.enrollStudentsGrid(btn.getAttribute('data-enroll'), btn.getAttribute('data-sname'));
       });
       el.querySelectorAll('[data-view-enroll]').forEach(btn => {
         btn.onclick = () => this.viewSubjectEnrollments(btn.getAttribute('data-view-enroll'));
       });
+      el.querySelectorAll('[data-edit-course]').forEach(btn => {
+        btn.onclick = () => this.editCoursePrompt(btn.getAttribute('data-edit-course'));
+      });
+      el.querySelectorAll('[data-del-course]').forEach(btn => {
+        btn.onclick = () => this.deleteCourse(btn.getAttribute('data-del-course'));
+      });
+      el.querySelectorAll('[data-edit-subject]').forEach(btn => {
+        btn.onclick = () => this.editSubjectPrompt(btn.getAttribute('data-edit-subject'));
+      });
+      el.querySelectorAll('[data-del-subject]').forEach(btn => {
+        btn.onclick = () => this.deleteSubject(btn.getAttribute('data-del-subject'));
+      });
     } catch (e) {
-      el.innerHTML = `<p class="text-muted">Could not load: ${escapeHtml(e.message || '')}. Ensure Firestore rules allow courses/subjects/enrollments.</p>`;
+      el.innerHTML = `<p class="text-muted">Could not load: ${escapeHtml(e.message || '')}. Allow read/write on courses, subjects, enrollments.</p>`;
     }
   },
 
@@ -4646,6 +4676,44 @@ const App = {
       });
       await this.renderCoursesRoot();
     } catch (e) { await UI.alert(e.message || String(e), 'Error'); }
+  },
+
+  async editCoursePrompt(courseId) {
+    try {
+      const snap = await window.db.collection('courses').doc(courseId).get();
+      if (!snap.exists) return;
+      const c = snap.data();
+      const name = await UI.prompt('Course name:', c.name || '', 'Edit course');
+      if (name == null) return;
+      const code = await UI.prompt('Course code:', c.code || '', 'Course code');
+      if (code == null) return;
+      await window.db.collection('courses').doc(courseId).update({
+        name: String(name).trim(),
+        code: String(code).trim(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      await this.renderCoursesRoot();
+    } catch (e) { await UI.alert(e.message || String(e), 'Error'); }
+  },
+
+  async deleteCourse(courseId) {
+    const ok = await UI.confirm('Delete this course and its subjects/enrollments?', 'Delete course');
+    if (!ok) return;
+    try {
+      UI.showLoading('Deleting…');
+      const subs = await window.db.collection('subjects').where('courseId', '==', courseId).get();
+      for (const d of subs.docs) {
+        const ens = await window.db.collection('enrollments').where('subjectId', '==', d.id).get();
+        for (const e of ens.docs) await e.ref.delete();
+        await d.ref.delete();
+      }
+      await window.db.collection('courses').doc(courseId).delete();
+      UI.hideLoading();
+      await this.renderCoursesRoot();
+    } catch (e) {
+      try { UI.hideLoading(); } catch (_) {}
+      await UI.alert(e.message || String(e), 'Error');
+    }
   },
 
   async addSubjectPrompt() {
@@ -4671,30 +4739,146 @@ const App = {
     } catch (e) { await UI.alert(e.message || String(e), 'Error'); }
   },
 
-  async enrollStudentsPrompt(subjectId, subjectName) {
-    const raw = await UI.prompt(
-      'Student emails for ' + (subjectName || 'subject') + ' (comma or newline separated):',
-      '',
-      'Enroll students',
-      'student@student.laverdad.edu.ph'
-    );
-    if (raw == null || !String(raw).trim()) return;
-    const emails = String(raw).split(/[,\n;]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+  async editSubjectPrompt(subjectId) {
     try {
-      UI.showLoading('Enrolling…');
-      for (const email of emails) {
-        const id = subjectId + '_' + email.replace(/[^a-z0-9]/gi, '_');
-        await window.db.collection('enrollments').doc(id).set({
-          subjectId,
-          subjectName: subjectName || '',
-          email,
-          enrolledAt: firebase.firestore.FieldValue.serverTimestamp(),
-          enrolledBy: Auth.currentUser && Auth.currentUser.uid
-        }, { merge: true });
-      }
-      UI.hideLoading();
-      await UI.alert('Enrolled ' + emails.length + ' student(s).', 'Enroll');
+      const snap = await window.db.collection('subjects').doc(subjectId).get();
+      if (!snap.exists) return;
+      const s = snap.data();
+      const name = await UI.prompt('Subject name:', s.name || '', 'Edit subject');
+      if (name == null || !String(name).trim()) return;
+      await window.db.collection('subjects').doc(subjectId).update({
+        name: String(name).trim(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
       await this.renderCoursesRoot();
+    } catch (e) { await UI.alert(e.message || String(e), 'Error'); }
+  },
+
+  async deleteSubject(subjectId) {
+    const ok = await UI.confirm('Delete this subject and its enrollments?', 'Delete subject');
+    if (!ok) return;
+    try {
+      UI.showLoading('Deleting…');
+      const ens = await window.db.collection('enrollments').where('subjectId', '==', subjectId).get();
+      for (const e of ens.docs) await e.ref.delete();
+      await window.db.collection('subjects').doc(subjectId).delete();
+      UI.hideLoading();
+      await this.renderCoursesRoot();
+    } catch (e) {
+      try { UI.hideLoading(); } catch (_) {}
+      await UI.alert(e.message || String(e), 'Error');
+    }
+  },
+
+  async enrollStudentsGrid(subjectId, subjectName) {
+    try {
+      UI.showLoading('Loading students…');
+      // Build candidate list: role=student users + prior session emails
+      const map = {};
+      try {
+        const uSnap = await window.db.collection('users').where('role', '==', 'student').limit(500).get();
+        uSnap.docs.forEach(d => {
+          const u = d.data() || {};
+          const em = String(u.email || '').toLowerCase();
+          if (em) map[em] = { email: em, name: u.name || u.displayName || em };
+        });
+      } catch (_) {}
+      try {
+        const sSnap = await window.db.collection('sessions').limit(400).get();
+        sSnap.docs.forEach(d => {
+          const s = d.data() || {};
+          const em = String(s.studentEmail || '').toLowerCase();
+          if (em && !map[em]) map[em] = { email: em, name: s.studentName || em };
+        });
+      } catch (_) {}
+      const enrolledSnap = await window.db.collection('enrollments').where('subjectId', '==', subjectId).get();
+      const enrolled = {};
+      enrolledSnap.docs.forEach(d => {
+        const em = String((d.data() || {}).email || '').toLowerCase();
+        if (em) enrolled[em] = true;
+      });
+      UI.hideLoading();
+      const list = Object.values(map).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      await new Promise((resolve) => {
+        const w = document.createElement('div');
+        w.className = 'modal-overlay ui-modal-overlay';
+        w.style.zIndex = '60000';
+        w.innerHTML = `<div class="modal ui-modal" style="width:min(720px,96vw);max-height:90svh;display:flex;flex-direction:column">
+          <h2 style="margin-top:0">Enroll — ${escapeHtml(subjectName || 'Subject')}</h2>
+          <input type="search" id="enroll-filter" class="form-control" placeholder="Filter by name or email…" style="margin-bottom:0.5rem" />
+          <div style="flex:1;overflow:auto;border:1px solid var(--border);border-radius:8px;min-height:200px">
+            <table class="data-table" style="width:100%">
+              <thead><tr>
+                <th style="width:40px"><input type="checkbox" id="enroll-all" title="Select all" /></th>
+                <th>Name</th><th>Email</th><th>Status</th>
+              </tr></thead>
+              <tbody id="enroll-tbody">
+                ${list.length ? list.map(s => {
+                  const on = !!enrolled[s.email];
+                  return `<tr data-q="${escapeHtml((s.name + ' ' + s.email).toLowerCase())}">
+                    <td><input type="checkbox" class="enroll-cb" value="${escapeHtml(s.email)}" ${on ? 'checked' : ''} /></td>
+                    <td>${escapeHtml(s.name)}</td>
+                    <td>${escapeHtml(s.email)}</td>
+                    <td class="text-muted">${on ? 'Enrolled' : '—'}</td>
+                  </tr>`;
+                }).join('') : '<tr><td colspan="4" class="text-muted">No students found. They appear after signing in once, or from past sessions.</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+          <p class="text-muted" style="font-size:0.85rem;margin:0.5rem 0">Or add emails: <input type="text" id="enroll-extra" class="form-control" placeholder="email1@…, email2@…" style="margin-top:0.35rem" /></p>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-ghost" id="enroll-cancel">Cancel</button>
+            <button type="button" class="btn btn-primary" id="enroll-save">Save enrollment</button>
+          </div>
+        </div>`;
+        document.body.appendChild(w);
+        const filter = () => {
+          const q = (w.querySelector('#enroll-filter').value || '').toLowerCase();
+          w.querySelectorAll('#enroll-tbody tr[data-q]').forEach(tr => {
+            tr.style.display = !q || tr.getAttribute('data-q').includes(q) ? '' : 'none';
+          });
+        };
+        w.querySelector('#enroll-filter').oninput = filter;
+        w.querySelector('#enroll-all').onchange = (e) => {
+          w.querySelectorAll('.enroll-cb').forEach(cb => {
+            if (cb.closest('tr').style.display === 'none') return;
+            cb.checked = e.target.checked;
+          });
+        };
+        w.querySelector('#enroll-cancel').onclick = () => { w.remove(); resolve(); };
+        w.querySelector('#enroll-save').onclick = async () => {
+          const selected = [...w.querySelectorAll('.enroll-cb:checked')].map(c => c.value.toLowerCase());
+          const extra = (w.querySelector('#enroll-extra').value || '').split(/[,\n;]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+          const emails = [...new Set([...selected, ...extra])];
+          try {
+            UI.showLoading('Saving…');
+            // Remove unchecked that were enrolled
+            for (const em of Object.keys(enrolled)) {
+              if (!emails.includes(em)) {
+                const id = subjectId + '_' + em.replace(/[^a-z0-9]/gi, '_');
+                await window.db.collection('enrollments').doc(id).delete().catch(() => {});
+              }
+            }
+            for (const email of emails) {
+              const id = subjectId + '_' + email.replace(/[^a-z0-9]/gi, '_');
+              await window.db.collection('enrollments').doc(id).set({
+                subjectId,
+                subjectName: subjectName || '',
+                email,
+                enrolledAt: firebase.firestore.FieldValue.serverTimestamp(),
+                enrolledBy: Auth.currentUser && Auth.currentUser.uid
+              }, { merge: true });
+            }
+            UI.hideLoading();
+            w.remove();
+            resolve();
+            await this.renderCoursesRoot();
+          } catch (err) {
+            try { UI.hideLoading(); } catch (_) {}
+            await UI.alert(err.message || String(err), 'Error');
+          }
+        };
+      });
     } catch (e) {
       try { UI.hideLoading(); } catch (_) {}
       await UI.alert(e.message || String(e), 'Error');
@@ -4704,8 +4888,9 @@ const App = {
   async viewSubjectEnrollments(subjectId) {
     try {
       const snap = await window.db.collection('enrollments').where('subjectId', '==', subjectId).get();
-      const list = snap.docs.map(d => escapeHtml((d.data() || {}).email || '')).join('<br>') || 'None';
-      await UI.alert(list, 'Enrolled students');
+      const rows = snap.docs.map(d => d.data()).sort((a, b) => String(a.email).localeCompare(String(b.email)));
+      const list = rows.map(r => escapeHtml(r.email || '')).join('<br>') || 'None';
+      await UI.alert(list, 'Enrolled students (' + rows.length + ')');
     } catch (e) { await UI.alert(e.message || String(e), 'Error'); }
   },
 
@@ -9201,46 +9386,102 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
   },
 
   _runTimer(session, onExpireExtra) {
-    let endsAt = Number(session.endsAt) || (Date.now() + 3600000);
+    // Personal time limit (minutes from this student's start/continue) → auto-submit ("Time's up!")
+    // Assessment window end (exam.endAt) → hard close ("Assessment window closed")
+    const durMin = Number(session.durationMinutes) || Number(session.exam && session.exam.durationMinutes) || 60;
+    const startMs = Number(session.continueStartedAt) || Number(session.startedAt && session.startedAt.toMillis ? session.startedAt.toMillis() : session.startedAt) || Date.now();
+    let personalEndsAt = startMs + Math.max(1, durMin) * 60000;
+    if (session.endsAt && Number(session.endsAt) > Date.now() - 60000) {
+      // Prefer stored endsAt when it was set at continue/start
+      personalEndsAt = Number(session.endsAt);
+    }
+    let windowEndsAt = null;
+    try {
+      const exEnd = session.exam && session.exam.endAt != null ? Number(session.exam.endAt) : null;
+      if (exEnd && exEnd > 0) windowEndsAt = exEnd;
+    } catch (_) {}
+    // Display countdown: earlier of personal limit and window end
+    let endsAt = windowEndsAt ? Math.min(personalEndsAt, windowEndsAt) : personalEndsAt;
+    session.endsAt = endsAt;
     this._timerPaused = false;
     this._timerPauseStarted = null;
+    this._timerExpired = false;
     this._examTimerInterval = setInterval(async () => {
-      // Pause while section instruction is showing
+      if (this._timerExpired) return;
       if (this._timerPaused) {
         if (!this._timerPauseStarted) this._timerPauseStarted = Date.now();
         const el = document.getElementById('exam-timer');
         if (el) {
-          const remain = Math.max(0, endsAt - Date.now());
-          el.textContent = formatMs(remain);
+          el.textContent = formatMs(Math.max(0, endsAt - Date.now()));
           el.classList.remove('timer-warn');
         }
         return;
       }
       if (this._timerPauseStarted) {
-        endsAt += (Date.now() - this._timerPauseStarted);
+        const pauseMs = Date.now() - this._timerPauseStarted;
+        endsAt += pauseMs;
+        personalEndsAt += pauseMs;
         session.endsAt = endsAt;
         this._timerPauseStarted = null;
+        // Persist extended personal end (best-effort)
+        try {
+          if (session.id && !String(session.id).startsWith('test_')) {
+            window.db.collection('sessions').doc(session.id).update({ endsAt }).catch(() => {});
+          }
+        } catch (_) {}
       }
-      const remain = endsAt - Date.now();
+      const now = Date.now();
+      const remain = endsAt - now;
       const el = document.getElementById('exam-timer');
       if (el) {
         el.textContent = formatMs(Math.max(0, remain));
         if (remain < 300000) el.classList.add('timer-warn');
       }
-      if (remain <= 0) {
-        clearInterval(this._examTimerInterval);
-        CodeEditor.lockEditor?.();
-        document.getElementById('timesup-overlay')?.classList.remove('hidden');
-        try {
-          if (onExpireExtra) await onExpireExtra();
-          await Exam.submitSession(session.id, 'timeout');
-        } catch (e) { console.error(e); }
+      if (remain > 0) return;
+      this._timerExpired = true;
+      clearInterval(this._examTimerInterval);
+      const hitWindow = windowEndsAt && now >= windowEndsAt - 2000;
+      // Show correct overlay text
+      let ov = document.getElementById('timesup-overlay');
+      if (!ov) {
+        ov = document.createElement('div');
+        ov.id = 'timesup-overlay';
+        ov.className = 'timesup-overlay';
+        document.body.appendChild(ov);
       }
+      ov.classList.remove('hidden');
+      ov.innerHTML = hitWindow
+        ? `<div class="timesup-box"><h1>Assessment window closed</h1>
+            <p>The scheduled end time for this assessment has been reached. Your work is being submitted.</p>
+            <div class="action-btns" style="justify-content:center;margin-top:1rem">
+              <button class="btn btn-primary" onclick="App.showStudentHistory()">View results</button>
+              <button class="btn btn-ghost" onclick="App.showStudentHome()">Back to home</button>
+            </div></div>`
+        : `<div class="timesup-box"><h1>Time's up!</h1>
+            <p>Your time limit ended. Your work is being submitted automatically.</p>
+            <div class="action-btns" style="justify-content:center;margin-top:1rem">
+              <button class="btn btn-primary" onclick="App.showStudentHistory()">View results</button>
+              <button class="btn btn-ghost" onclick="App.showStudentHome()">Back to home</button>
+            </div></div>`;
+      try { CodeEditor.lockEditor?.(); } catch (_) {}
+      try {
+        if (onExpireExtra) await onExpireExtra();
+        else if (session.id && !String(session.id).startsWith('test_')) {
+          await Exam.submitSession(session.id, hitWindow ? 'window-ended' : 'timeout');
+        }
+      } catch (e) { console.error(e); }
     }, 500);
 
-    Exam.listenToSession(session.id, (s) => {
-      if (s.endsAt && s.endsAt > endsAt) endsAt = s.endsAt;
-    });
+    if (session.id && !String(session.id).startsWith('test_') && Exam.listenToSession) {
+      Exam.listenToSession(session.id, (s) => {
+        if (!s) return;
+        // Instructor extend: only lengthen personal timer, never shorten below remaining window
+        if (s.endsAt && Number(s.endsAt) > endsAt) {
+          endsAt = Number(s.endsAt);
+          personalEndsAt = endsAt;
+        }
+      });
+    }
   },
 
   // ---- Grading / export (retained) ----
