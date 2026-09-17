@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.80
+ * v1.5.82
  */
 
 const App = {
@@ -239,13 +239,58 @@ const App = {
     });
   },
 
+
+  makePassageImagesResizable(root) {
+    try {
+      (root || document).querySelectorAll('.rte-editor img, [data-pass-html] img').forEach(img => {
+        if (img.dataset.resizable === '1') return;
+        img.dataset.resizable = '1';
+        img.style.maxWidth = '100%';
+        img.style.cursor = 'nwse-resize';
+        img.title = 'Drag corner to resize · click for wrap options';
+        // corner handle via CSS resize
+        if (!img.style.resize) img.style.resize = 'both';
+        img.style.overflow = 'auto';
+        img.style.display = 'inline-block';
+        if (!img.style.width && img.naturalWidth) {
+          img.style.width = Math.min(img.naturalWidth, 320) + 'px';
+          img.style.height = 'auto';
+        }
+        // mouse drag resize
+        let startX, startW;
+        const onMove = (ev) => {
+          if (!startW) return;
+          const dx = ev.clientX - startX;
+          img.style.width = Math.max(40, startW + dx) + 'px';
+          img.style.height = 'auto';
+        };
+        const onUp = () => {
+          startW = null;
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+        };
+        img.addEventListener('mousedown', (ev) => {
+          // only start resize near bottom-right corner
+          const r = img.getBoundingClientRect();
+          if (ev.clientX < r.right - 18 || ev.clientY < r.bottom - 18) return;
+          ev.preventDefault();
+          startX = ev.clientX;
+          startW = img.getBoundingClientRect().width;
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+        });
+      });
+    } catch (_) {}
+  },
   applyDynamicChoiceFonts(root) {
     try {
-      (root || document).querySelectorAll('.mc-opt, .tf-option, .option-card, .take-mc-options button, .mc-choice').forEach(el => {
-        const t = (el.textContent || '').trim();
-        el.classList.remove('mc-short', 'mc-long');
-        if (t.length <= 24) el.classList.add('mc-short');
-        else if (t.length >= 80) el.classList.add('mc-long');
+      const sel = '.mc-opt, .tf-option, .option-card, .take-mc-options button, .mc-choice, .gq-option, .gq-student, .take-opt, .gq-options-row button';
+      (root || document).querySelectorAll(sel).forEach(el => {
+        const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        el.classList.remove('mc-short', 'mc-med', 'mc-long');
+        if (t.length <= 28) el.classList.add('mc-short');
+        else if (t.length <= 90) el.classList.add('mc-med');
+        else el.classList.add('mc-long');
       });
     } catch (_) {}
   },
@@ -265,7 +310,6 @@ const App = {
         q.passages[ti].html = ed.innerHTML;
         if (ti === 0) q.passageHtml = ed.innerHTML;
       });
-      // Sync nested passage question prompts/options from DOM so they are not lost on re-render
       document.querySelectorAll('[data-pass-q-prompt]').forEach(el => {
         const [gi, ki] = String(el.dataset.passQPrompt || '').split(':').map(Number);
         const q = (window._builderQuestions || [])[gi];
@@ -287,6 +331,7 @@ const App = {
       });
     } catch (_) {}
   },
+
 
   /**
    * After adding a row/option in assessment config: scroll into view and focus first editable field.
@@ -490,7 +535,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.80</div>
+          <div class="app-version">Build v1.5.82</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -632,7 +677,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.80</div>
+              <div class="app-version">v1.5.82</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -2560,6 +2605,7 @@ const App = {
         if (ti === 0) q.passageHtml = html;
       };
       // Passage
+      try { App.makePassageImagesResizable(box); } catch (_) {}
       box.querySelectorAll('[data-pass-html]').forEach(el => {
         el.oninput = () => { const q = qAt(el.dataset.passHtml); writePassageHtml(q, el); };
         el.onblur = () => { const q = qAt(el.dataset.passHtml); writePassageHtml(q, el); };
@@ -2735,20 +2781,60 @@ const App = {
           const gi = Number(el.dataset.passAddQ);
           const q = qAt(gi);
           if (!q) return;
+          try { App.syncPassageEditorsFromDom(); } catch (_) {}
           q.questions = Array.isArray(q.questions) ? q.questions : [];
-          const tabEl = box.querySelector(`[data-pass-html="${gi}"]`);
-          const activeTab = tabEl ? (Number(tabEl.getAttribute('data-pass-active-tab')) || 0) : 0;
+          const tabEl = box.querySelector(`[data-pass-html="${gi}"]`) || document.querySelector(`[data-pass-html="${gi}"]`);
+          const activeTab = tabEl
+            ? (Number(tabEl.getAttribute('data-pass-active-tab') || tabEl.dataset.passActiveTab || 0) || 0)
+            : 0;
+          const newId = 'pq' + Date.now();
           q.questions.push({
-            id: 'pq' + Date.now(), type: 'multiple', prompt: '', options: ['', '', '', ''],
-            correct: 0, points: 1, passageIndex: activeTab, passageTab: activeTab
+            id: newId, type: 'multiple', prompt: '', options: ['', '', '', ''],
+            correct: 0, points: 1, tabIndex: activeTab, passageTab: activeTab
           });
           window._passFocusGi = gi;
+          window._passFocusTab = activeTab;
+          window._passFocusQid = newId;
           window._passFocusScroll = true;
           syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
-          setTimeout(() => {
-            const root = document.querySelector(`[data-pass-add-q="${gi}"]`)?.closest('.passage-builder-wrap, .card') || document.querySelector(`.passage-builder-wrap`);
-            App.focusLastAddedBuilderItem(root && root.querySelector('.pass-q-list-scroll, .pass-q-list') || root, '.pass-q-card-tab, .card.mt-1');
-          }, 150);
+          const focusNew = () => {
+            try {
+              const wrap = document.querySelector(`[data-pass-add-q="${gi}"]`)?.closest('.passage-builder-wrap, .card, .q-in-section');
+              if (!wrap) return;
+              const tabBtn = wrap.querySelector(`[data-pass-tab-cfg="${gi}:${activeTab}"]`);
+              if (tabBtn && !tabBtn.classList.contains('active')) {
+                try { tabBtn.click(); } catch (_) {}
+              }
+              const ed = wrap.querySelector(`[data-pass-html="${gi}"]`);
+              if (ed) {
+                ed.setAttribute('data-pass-active-tab', String(activeTab));
+                ed.dataset.passActiveTab = String(activeTab);
+              }
+              // show only this tab's cards
+              wrap.querySelectorAll('.pass-q-card-tab').forEach(card => {
+                const t = Number(card.getAttribute('data-tab') || 0);
+                card.style.display = (t === activeTab) ? '' : 'none';
+              });
+              const cards = [...wrap.querySelectorAll('.pass-q-card-tab')].filter(c => c.style.display !== 'none');
+              let target = cards[cards.length - 1];
+              for (let i = cards.length - 1; i >= 0; i--) {
+                if ((cards[i].innerHTML || '').indexOf(newId) >= 0) { target = cards[i]; break; }
+              }
+              if (target) {
+                const main = document.querySelector('.main-content') || document.getElementById('app');
+                if (main) {
+                  const mr = main.getBoundingClientRect();
+                  const lr = target.getBoundingClientRect();
+                  main.scrollTop += (lr.top - mr.top) - 80;
+                } else target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                const focusable = target.querySelector('input:not([type=checkbox]):not([type=hidden]):not([type=radio]), textarea, [contenteditable="true"]');
+                if (focusable) try { focusable.focus({ preventScroll: true }); } catch (_) { try { focusable.focus(); } catch (__) {} }
+              }
+            } catch (_) {}
+          };
+          setTimeout(focusNew, 120);
+          setTimeout(focusNew, 300);
+          setTimeout(focusNew, 550);
         };
       });
       
@@ -5287,120 +5373,182 @@ const App = {
   },
 
   computeAttemptStats(session, exam) {
-    const questions = session.questionsSnapshot?.length
+    let questions = session.questionsSnapshot?.length
       ? session.questionsSnapshot
       : (exam ? (typeof Regular.flattenQuestions === 'function' ? Regular.flattenQuestions(exam) : (exam.questions || [])) : []);
-    const answers = session.answers || {};
-    // Local backup so F5 does not lose progress if Firestore is slow
+    if (!Array.isArray(questions)) questions = [];
+    // Prefer sections if snapshot empty
+    if (!questions.length && exam && Array.isArray(exam.sections)) {
+      questions = exam.sections.flatMap(s => s.questions || []);
+    }
+    let answers = session.answers || {};
     try {
-      const local = sessionStorage.getItem('lvcc_answers_' + session.id);
+      const local = sessionStorage.getItem('lvcc_answers_' + (session && session.id));
       if (local) {
         const parsed = JSON.parse(local);
         if (parsed && typeof parsed === 'object') answers = { ...parsed, ...answers };
       }
     } catch (_) {}
 
-    // Prefer live grade when we have questions + answers
-    if (questions.length && typeof Regular.gradeAnswers === 'function') {
-      let correct = 0, incorrect = 0, unattempted = 0;
-      const total = questions.length;
-      questions.forEach(q => {
-        if (!q) return;
-        if (q.type === 'essay' || q.type === 'open') {
-          const resp = answers[q.id];
-          const empty = resp === undefined || resp === null || String(resp).trim() === '';
-          if (empty) unattempted++;
-          // answered essay is attempted (manual grade later) — do NOT count as unattempted
-          return;
-        }
-        // passage: count nested
-        if ((q.type === 'passage' || q.isPassageSet) && Array.isArray(q.questions)) {
-          q.questions.forEach(nq => {
-            const resp = answers[nq.id];
-            const empty = resp === undefined || resp === null || resp === '' ||
-              (Array.isArray(resp) && !resp.length) ||
-              (typeof resp === 'object' && !Array.isArray(resp) && !Object.keys(resp || {}).length);
-            if (empty) { unattempted++; return; }
-            if (nq.type === 'essay' || nq.type === 'open') return; // attempted open-ended
-            const r = Regular._gradeOne(nq, resp);
-            if (r.ok) correct++;
-            else incorrect++;
-          });
-          return;
-        }
-        if (q.type === 'wordbox' && Array.isArray(q.questions) && q.questions.length) {
-          q.questions.forEach(kq => {
-            const r = Regular._gradeOne({ ...kq, type: 'wordbox', blanks: kq.blanks }, answers[kq.id] ?? answers[q.id]);
-            const resp = answers[kq.id] ?? answers[q.id];
-            const empty = resp === undefined || resp === null || resp === '' ||
-              (typeof resp === 'object' && !Object.keys(resp || {}).length);
-            if (empty) unattempted++;
-            else if (r.ok) correct++;
-            else incorrect++;
-          });
-          return;
-        }
-        const resp = answers[q.id];
-        const empty = resp === undefined || resp === null || resp === '' ||
-          (Array.isArray(resp) && !resp.length) ||
-          (typeof resp === 'object' && !Array.isArray(resp) && !Object.keys(resp).length);
-        if (empty) { unattempted++; return; }
-        const r = Regular._gradeOne(q, resp);
-        if (r.ok) correct++;
-        else incorrect++;
-      });
-      // Recount total for nested
-      let totalCount = 0;
-      questions.forEach(q => {
-        if ((q.type === 'passage' || q.isPassageSet) && Array.isArray(q.questions)) totalCount += q.questions.length;
-        else if (q.type === 'wordbox' && Array.isArray(q.questions) && q.questions.length) totalCount += q.questions.length;
-        else totalCount += 1;
-      });
-      const accuracy = totalCount ? Math.round((correct / totalCount) * 100) : 0;
-      return { total: totalCount, correct, incorrect, unattempted, accuracy };
-    }
-    // Fallback to stored fields
-    if (session && (session.totalQuestions != null || session.correctCount != null) && (session.correctCount != null || session.score != null)) {
-      const total = Number(session.totalQuestions != null ? session.totalQuestions : session.maxScore) || 0;
-      const correct = Number(session.correctCount != null ? session.correctCount : session.score) || 0;
-      const incorrect = Number(session.incorrectCount) || 0;
-      const unattempted = session.unattemptedCount != null ? Number(session.unattemptedCount) : Math.max(0, total - correct - incorrect);
-      const accuracy = session.accuracy != null ? Number(session.accuracy) : (total ? Math.round((correct / total) * 100) : 0);
-      return { total, correct, incorrect, unattempted, accuracy };
-    }
-    let correct = 0, incorrect = 0, unattempted = 0, total = questions.length;
-    if (!total && session.code != null) {
-      // code assessment single item
-      total = 1;
-      if (session.status === 'submitted') {
-        if (session.score != null && session.maxScore) {
-          correct = session.score >= session.maxScore ? 1 : 0;
-          incorrect = correct ? 0 : 1;
-        } else {
-          unattempted = session.code ? 0 : 1;
-          incorrect = session.code ? 1 : 0;
-        }
+    const isEmpty = (resp) => (
+      resp === undefined || resp === null || resp === '' ||
+      (Array.isArray(resp) && !resp.length) ||
+      (typeof resp === 'object' && !Array.isArray(resp) && !Object.keys(resp || {}).length)
+    );
+
+    // Point totals from grading engine (source of truth for Score X / Y)
+    let score = 0, maxScore = 0;
+    try {
+      if (questions.length && window.Regular && typeof Regular.gradeAnswers === 'function') {
+        const g = Regular.gradeAnswers(questions, answers);
+        score = Number(g.score) || 0;
+        maxScore = Number(g.maxScore) || 0;
       }
-      return { total, correct, incorrect, unattempted, accuracy: total ? Math.round((correct / total) * 100) : 0 };
-    }
-    questions.forEach(q => {
-      const resp = answers[q.id];
-      const empty = resp === undefined || resp === null || resp === '' || (Array.isArray(resp) && !resp.length);
-      if (empty) { unattempted++; return; }
-      if (q.type === 'essay' || q.type === 'open') {
-        // answered essay is attempted; only empty counts as unattempted
+    } catch (_) {}
+
+    // Item-level breakdown (expanded for multi-part types so Total aligns with max points when 1pt each)
+    let correct = 0, incorrect = 0, unattempted = 0, totalItems = 0;
+
+    const countOne = (q, resp) => {
+      if (!q) return;
+      if (q.type === 'essay' || q.type === 'open' || q.type === 'openended') {
+        totalItems += 1;
+        if (isEmpty(resp)) unattempted++;
+        // answered essay: neither correct nor incorrect until manual grade
         return;
       }
-      try {
-        const g = Regular.gradeAnswers([q], { [q.id]: resp });
-        if ((g.score || 0) >= (g.maxScore || 1)) correct++;
-        else incorrect++;
-      } catch (_) {
-        incorrect++;
+      if (q.type === 'categorize') {
+        const items = q.items || [];
+        const ans = (resp && typeof resp === 'object') ? resp : {};
+        items.forEach(it => {
+          totalItems += 1;
+          const studentCat = ans[it.id] ?? ans[it.name];
+          if (studentCat == null || studentCat === '') { unattempted++; return; }
+          const expected = it.category ?? it.categoryId ?? it.answer ?? it.catId;
+          const ok = expected != null && (
+            String(studentCat) === String(expected) ||
+            (Regular.normAns && Regular.normAns(studentCat) === Regular.normAns(expected))
+          );
+          if (ok) correct++; else incorrect++;
+        });
+        if (!items.length) { totalItems += 1; if (isEmpty(resp)) unattempted++; else incorrect++; }
+        return;
       }
+      if (q.type === 'match') {
+        const left = q.left || [];
+        const corr = Array.isArray(q.correct) ? q.correct : [];
+        const ans = (resp && typeof resp === 'object' && !Array.isArray(resp)) ? resp : {};
+        left.forEach((_, i) => {
+          totalItems += 1;
+          let student = ans[i];
+          if (student === undefined) student = ans[String(i)];
+          if (student === undefined || student === null || student === '') { unattempted++; return; }
+          if (Number(student) === Number(corr[i])) correct++;
+          else incorrect++;
+        });
+        if (!left.length) { totalItems += 1; if (isEmpty(resp)) unattempted++; else incorrect++; }
+        return;
+      }
+      if (q.type === 'fill') {
+        let blanks = [];
+        if (Array.isArray(q.parts)) blanks = q.parts.filter(p => p.kind === 'blank');
+        else if (Array.isArray(q.blanks)) blanks = q.blanks;
+        const ans = (resp && typeof resp === 'object') ? resp : {};
+        if (blanks.length) {
+          blanks.forEach((b, bi) => {
+            totalItems += 1;
+            const id = b.id != null ? b.id : String(bi + 1);
+            const student = ans[id] ?? ans[String(id)] ?? '';
+            if (student === undefined || student === null || String(student).trim() === '') { unattempted++; return; }
+            try {
+              const r = Regular._gradeOne({ ...q, type: 'fill', parts: [{ kind: 'blank', id, correct: b.correct, alternatives: b.alternatives }], blanks: [b] }, { [id]: student });
+              // simpler match
+              const ok = Regular.matchesCorrect
+                ? Regular.matchesCorrect(student, b.correct, b.alternatives || [])
+                : String(student).trim().toLowerCase() === String(b.correct || '').trim().toLowerCase();
+              if (ok) correct++; else incorrect++;
+            } catch (_) { incorrect++; }
+          });
+          return;
+        }
+      }
+      if (q.type === 'table' || q.type === 'tablefill') {
+        const cells = q.cells || {};
+        const blanks = Object.keys(cells).filter(k => cells[k] && cells[k].blank);
+        const ans = (resp && typeof resp === 'object') ? resp : {};
+        if (blanks.length) {
+          blanks.forEach(key => {
+            totalItems += 1;
+            const cell = cells[key] || {};
+            const student = ans[key] ?? '';
+            if (student === undefined || student === null || String(student).trim() === '') { unattempted++; return; }
+            const corr = Array.isArray(cell.correct) ? cell.correct : [cell.correct];
+            const alts = cell.alternatives || [];
+            const ok = Regular.matchesCorrect
+              ? Regular.matchesCorrect(student, corr[0], [...corr.slice(1), ...alts])
+              : false;
+            if (ok) correct++; else incorrect++;
+          });
+          return;
+        }
+      }
+      // default single question
+      totalItems += 1;
+      if (isEmpty(resp)) { unattempted++; return; }
+      try {
+        const r = Regular._gradeOne(q, resp);
+        if (r.ok) correct++; else incorrect++;
+      } catch (_) { incorrect++; }
+    };
+
+    questions.forEach(q => {
+      if (!q) return;
+      if ((q.type === 'passage' || q.isPassageSet) && Array.isArray(q.questions)) {
+        q.questions.forEach(nq => countOne(nq, answers[nq.id]));
+        return;
+      }
+      if (q.type === 'wordbox' && Array.isArray(q.questions) && q.questions.length) {
+        q.questions.forEach(kq => countOne({ ...kq, type: 'wordbox', bank: q.bank }, answers[kq.id] ?? answers[q.id]));
+        return;
+      }
+      countOne(q, answers[q.id]);
     });
-    const accuracy = total ? Math.round((correct / total) * 100) : 0;
-    return { total, correct, incorrect, unattempted, accuracy };
+
+    // Align Total with max score (points). When 1pt per sub-item, maxScore === totalItems.
+    // Prefer maxScore when available so the Total card matches Score X / Y.
+    // ALWAYS: Total card === max score (points). Never show question-count when points differ.
+    const total = maxScore > 0 ? maxScore : (totalItems || questions.length || 0);
+    const correctDisp = maxScore > 0 ? score : correct;
+    // Scale incorrect/unattempted to remaining points when using point totals
+    let incorrectDisp = incorrect;
+    let unattemptedDisp = unattempted;
+    if (maxScore > 0 && totalItems > 0 && Math.abs(maxScore - totalItems) > 0.01) {
+      // points-per-item != 1: map item counts proportionally is complex; use residual points
+      const used = score;
+      const wrongPts = Math.max(0, (maxScore - score) - (unattempted * (maxScore / totalItems)));
+      incorrectDisp = Math.round(wrongPts * 100) / 100;
+      unattemptedDisp = Math.round((unattempted * (maxScore / totalItems)) * 100) / 100;
+    } else if (maxScore > 0) {
+      // 1 point per counted item — incorrect/unattempted already in points
+      incorrectDisp = incorrect;
+      unattemptedDisp = unattempted;
+      // ensure Correct uses item-correct when score matches
+      if (Math.abs(score - correct) < 0.01) {
+        /* ok */
+      }
+    }
+
+    const accuracy = total > 0 ? Math.round((correctDisp / total) * 100) : 0;
+    return {
+      total,
+      correct: correctDisp,
+      incorrect: incorrectDisp,
+      unattempted: unattemptedDisp,
+      accuracy,
+      score,
+      maxScore: maxScore || total,
+      totalItems
+    };
   },
 
   integrityTypeLabel(type) {
@@ -6371,7 +6519,7 @@ const App = {
         ensureSpace(Math.min(est, 80));
         writeSection(typeLabel[t] || t, () => {
           items.forEach(r => {
-            const promptLines = doc.splitTextToSize(this.pdfSafeText(String(r.prompt || 'Question').slice(0, 1200)), 175);
+            const promptLines = doc.splitTextToSize(this.pdfSafeText(String(r.prompt || 'Question').slice(0, 1200)), 170);
             const respEst = 12 + Math.ceil(String(r.response || '').length / 90) * 5;
             const corrEst = 12 + Math.ceil(String(r.correct || '').length / 90) * 5;
             // Keep question + response + correct together when possible
@@ -6393,7 +6541,7 @@ const App = {
             const respParts = this.pdfSafeText(String(r.response || '—').slice(0, 900)).split(/\n+/).filter(Boolean);
             respParts.forEach(line => {
               ensureSpace(8);
-              const lines = doc.splitTextToSize(line, 175);
+              const lines = doc.splitTextToSize(line, 170);
               doc.text(lines, 16, y);
               y += lines.length * 4.5 + 1;
             });
@@ -6407,7 +6555,7 @@ const App = {
             const corrParts = this.pdfSafeText(String(r.correct || '—').slice(0, 900)).split(/\n+/).filter(Boolean);
             corrParts.forEach(line => {
               ensureSpace(8);
-              const lines = doc.splitTextToSize(line, 175);
+              const lines = doc.splitTextToSize(line, 170);
               doc.text(lines, 16, y);
               y += lines.length * 4.5 + 1;
             });
@@ -6569,7 +6717,7 @@ const App = {
                   for (let c = 0; c < cols; c++) {
                     const v = (row.values && row.values[c]) || '';
                     doc.setFontSize(7);
-                    const _sv = doc.splitTextToSize(this.pdfSafeText(String(v)), Math.max(8, colW - 2));
+                    const _sv = doc.splitTextToSize(this.pdfSafeText(String(v == null ? '' : v)), Math.max(12, colW - 3));
                     doc.text(_sv[0] || '', startX + c * colW + 1, y + 2);
                   }
                   y += 9;
@@ -7183,20 +7331,24 @@ const App = {
             if (window.Regular && Regular.gradeAnswers) graded = Regular.gradeAnswers(qs, sess.answers || {});
           } catch (_) {}
           const sc = Math.round((graded.score || 0) * 100) / 100;
-          const mx = Math.round((graded.maxScore || st.total || 0) * 100) / 100;
+          const mx = Math.round((graded.maxScore || st.maxScore || st.total || 0) * 100) / 100;
+          const tot = mx; // Total always equals max score
+          const cor = sc; // Correct points earned
+          const una = Number(st.unattempted) || 0;
+          const inc = Math.max(0, Math.round((mx - sc - una) * 100) / 100);
+          const acc = mx ? Math.round((sc / mx) * 100) : 0;
           panelInner.innerHTML = `
             <div class="card" style="max-width:720px;margin:2rem auto;padding:1.5rem">
               <h2 style="margin-top:0">Section test result</h2>
               <p class="text-muted">${escapeHtml(sec.title || 'Section')} — scoring preview (not saved)</p>
               <div class="attempt-stats">
-                <div class="attempt-stat"><div class="val">${st.total}</div><div class="lbl">Total</div></div>
-                <div class="attempt-stat"><div class="val">${st.correct}</div><div class="lbl">Correct</div></div>
-                <div class="attempt-stat"><div class="val">${st.incorrect}</div><div class="lbl">Incorrect</div></div>
-                <div class="attempt-stat"><div class="val">${st.unattempted}</div><div class="lbl">Unattempted</div></div>
-                <div class="attempt-stat"><div class="val">${st.accuracy}%</div><div class="lbl">Accuracy</div></div>
+                <div class="attempt-stat"><div class="val">${tot}</div><div class="lbl">Total</div></div>
+                <div class="attempt-stat"><div class="val">${cor}</div><div class="lbl">Correct</div></div>
+                <div class="attempt-stat"><div class="val">${inc}</div><div class="lbl">Incorrect</div></div>
+                <div class="attempt-stat"><div class="val">${una}</div><div class="lbl">Unattempted</div></div>
+                <div class="attempt-stat"><div class="val">${acc}%</div><div class="lbl">Accuracy</div></div>
               </div>
               <p style="margin-top:1rem">Score: <strong>${sc}</strong> / ${mx}</p>
-              <p class="text-muted" style="font-size:0.9rem">Items: ${st.correct} correct · ${st.incorrect} incorrect · ${st.unattempted} unattempted (of ${st.total})</p>
               <div class="action-btns" style="margin-top:1.25rem">
                 <button class="btn btn-primary" id="sec-test-close">Close</button>
               </div>

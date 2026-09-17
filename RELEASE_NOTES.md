@@ -695,3 +695,18 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Auto-update categorize total points when adding items or changing points-per-item
 - normalizeQuestionPoints on save so configured totals stick
 - More aggressive image compress + externalize at 400KB to fix 1MB save failures
+
+## v1.5.81
+- Stats Total always equals max score (points): categorize 6 items → Total 6, Score 6/6
+- Section test cards use points (Total/Correct match Score line)
+- computeAttemptStats expands categorize/match/fill/table sub-items for Correct/Incorrect/Unattempted
+
+## v1.5.82
+- Categorize images 85–90% width of options column
+- Window resize no longer logged as integrity issue
+- Live dashboard: Lock / Unlock student assessment + optional message
+- Passage: add question stays on active tab and focuses the new question (not tab 1 Q1)
+- Passage images: drag corner to resize restored
+- MC/TF dynamic font sizes apply to .gq-option student buttons (short larger, long smaller)
+- PDF: slightly wider text wrap / less cell clipping
+- Total stats continue to follow max score points

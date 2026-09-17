@@ -1332,6 +1332,48 @@ const Dashboard = {
       await UI.alert(e.message || String(e), 'Error');
     }
   },
+
+  async lockStudentSession(sessionId) {
+    try {
+      if (!sessionId) return;
+      const msg = await UI.prompt(
+        'Optional message shown to the student while locked:',
+        'Your assessment was locked by the instructor. Wait for further instructions.',
+        'Lock student assessment',
+        'Message to student…'
+      );
+      if (msg === null) return; // cancelled
+      await window.db.collection('sessions').doc(sessionId).update({
+        lockedUntilAdmit: true,
+        instructorAdmitted: false,
+        lockReason: 'instructor-lock',
+        lockMessage: String(msg || '').trim() || 'Your assessment was locked by the instructor.',
+        lockRequestAt: firebase.firestore.FieldValue.serverTimestamp(),
+        chatPing: Date.now(),
+        lastInstructorMessage: String(msg || '').trim() || 'Assessment locked by instructor.'
+      });
+      await UI.alert('Student assessment locked. They must wait for Admit to continue.', 'Locked');
+    } catch (e) {
+      console.error(e);
+      await UI.alert(e.message || 'Could not lock', 'Error');
+    }
+  },
+
+  async unlockStudentSession(sessionId) {
+    try {
+      if (!sessionId) return;
+      await window.db.collection('sessions').doc(sessionId).update({
+        lockedUntilAdmit: false,
+        instructorAdmitted: true,
+        admittedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      await UI.alert('Student can continue the assessment.', 'Unlocked');
+    } catch (e) {
+      console.error(e);
+      await UI.alert(e.message || 'Could not unlock', 'Error');
+    }
+  },
+
   async promptExtend(sessionId) {
     const mins = await UI.prompt('Extend this student by how many minutes?', '15', 'Extend');
     if (!mins) return;
@@ -1525,6 +1567,8 @@ const Dashboard = {
           <div class="action-btns" style="padding:0.5rem">
             <button class="btn btn-sm btn-ghost" onclick="Dashboard.openStudentDetail('${s.id}')">Details</button>
             <button class="btn btn-sm btn-ghost" onclick="Dashboard.messageStudent('${s.id}')">Message student</button>
+            <button class="btn btn-sm btn-muted" onclick="Dashboard.lockStudentSession('${s.id}')">Lock</button>
+            <button class="btn btn-sm btn-ghost" onclick="Dashboard.unlockStudentSession('${s.id}')">Unlock</button>
             <button class="btn btn-sm btn-primary" onclick="Dashboard.promptExtend('${s.id}')">⏱ Extend</button>
             <button class="btn btn-sm btn-danger" onclick="Dashboard.endStudentAssessment('${s.id}')">End assessment</button>
             <button class="btn btn-sm btn-primary" onclick="App.gradeSession('${s.id}', '${s.examId}')">Grade</button>
@@ -1544,6 +1588,8 @@ const Dashboard = {
         <div class="action-btns" style="padding:0.5rem">
           <button class="btn btn-sm btn-ghost" onclick="Dashboard.openStudentDetail('${s.id}')">Details</button>
           <button class="btn btn-sm btn-ghost" onclick="Dashboard.messageStudent('${s.id}')">Message student</button>
+            <button class="btn btn-sm btn-muted" onclick="Dashboard.lockStudentSession('${s.id}')">Lock</button>
+            <button class="btn btn-sm btn-ghost" onclick="Dashboard.unlockStudentSession('${s.id}')">Unlock</button>
           <button class="btn btn-sm btn-primary" onclick="App.gradeSession('${s.id}', '${s.examId || ''}')">Grade</button>
         </div></div>`;
       }).join('') || '<div class="empty-state">Waiting for students…</div>';

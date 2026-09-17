@@ -8046,3 +8046,44 @@ svg.match-lines {
 
 .builder-sections-title { clear: both; position: relative; z-index: 1; padding-top: 0.25rem; }
 .builder-sticky-bar { margin-bottom: 0.5rem; }
+
+
+/* v1.5.82 categorize images: 85% of options/column width */
+.cat-options-panel .cat-item-chip.has-img,
+.cat-bank .cat-item-chip.has-img,
+.cat-col .cat-item-chip.has-img,
+.cat-take .cat-item-chip.has-img,
+.cat-board .cat-item-chip.has-img {
+  width: 90% !important;
+  max-width: 90% !important;
+  min-width: 0 !important;
+  padding: 0.4rem !important;
+  box-sizing: border-box;
+}
+.cat-item-chip.has-img .cat-chip-img,
+.cat-item-chip.has-img img,
+.cat-chip-img {
+  width: 85% !important;
+  max-width: 85% !important;
+  height: auto !important;
+  max-height: none !important;
+  min-height: 80px;
+  object-fit: contain !important;
+  display: block;
+  margin: 0 auto;
+}
+
+/* v1.5.82 dynamic MC/TF on student take (.gq-option) */
+.gq-option.gq-student.mc-short,
+.gq-student.mc-short { font-size: 1.55rem !important; line-height: 1.3 !important; }
+.gq-option.gq-student.mc-med,
+.gq-student.mc-med { font-size: 1.15rem !important; line-height: 1.35 !important; }
+.gq-option.gq-student.mc-long,
+.gq-student.mc-long { font-size: 0.92rem !important; line-height: 1.35 !important; }
+.gq-option.gq-student span { font-size: inherit !important; }
+.gq-option.gq-student {
+  align-items: center !important;
+  justify-content: center !important;
+  text-align: center !important;
+  overflow: hidden;
+}

@@ -833,15 +833,10 @@ const Monitor = {
       clearTimeout(resizeTimer);
       resizeTimer = setTimeout(() => {
         if (this.submitting || this._integrityPaused || window._lvccIntegrityPaused) return;
-        // Ignore tiny visual viewport changes
+        // Window resize is NOT an integrity violation (user request).
+        // Still track size for other heuristics but do not record.
         const w = window.innerWidth, h = window.innerHeight;
-        if (this._lastSize && Math.abs(this._lastSize.w - w) < 40 && Math.abs(this._lastSize.h - h) < 80) return;
         this._lastSize = { w, h };
-        this._recentResize = Date.now();
-        this.recordViolation('resize', true);
-        if (this._recentRightClick && Date.now() - this._recentRightClick < 10000) {
-          this.recordViolation('external-search-suspect', true);
-        }
       }, 1200);
     });
 
