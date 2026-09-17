@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.82
+ * v1.5.83
  */
 
 const App = {
@@ -535,7 +535,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.82</div>
+          <div class="app-version">Build v1.5.83</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -677,7 +677,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.82</div>
+              <div class="app-version">v1.5.83</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -1100,13 +1100,22 @@ const App = {
     if (!window.firebase || typeof firebase.storage !== 'function') {
       throw new Error('Firebase Storage SDK not loaded (firebase.storage)');
     }
+    let bucketOk = true;
+    try {
+      const b = (window.firebaseConfig && window.firebaseConfig.storageBucket) || '';
+      if (!b || b.indexOf('YOUR_') === 0) bucketOk = false;
+    } catch (_) { bucketOk = false; }
+    if (!bucketOk) {
+      throw new Error('storageBucket is missing in firebase config');
+    }
     const clone = JSON.parse(JSON.stringify(payload));
     const jobs = [];
+    // Any data:image (including categorize item.image) — threshold 800 chars (~small thumbs still uploaded)
     const walk = (node, path) => {
       if (!node || typeof node !== 'object') return;
       if (Array.isArray(node)) {
         node.forEach((v, i) => {
-          if (typeof v === 'string' && v.indexOf('data:image') === 0 && v.length > 2000) {
+          if (typeof v === 'string' && v.indexOf('data:image') === 0 && v.length > 800) {
             jobs.push({ path: path.concat([i]), dataUrl: v });
           } else if (v && typeof v === 'object') walk(v, path.concat([i]));
         });
@@ -1114,7 +1123,7 @@ const App = {
       }
       Object.keys(node).forEach(k => {
         const v = node[k];
-        if (typeof v === 'string' && v.indexOf('data:image') === 0 && v.length > 2000) {
+        if (typeof v === 'string' && v.indexOf('data:image') === 0 && v.length > 800) {
           jobs.push({ path: path.concat([k]), dataUrl: v });
         } else if (v && typeof v === 'object') walk(v, path.concat([k]));
       });
@@ -1177,9 +1186,9 @@ const App = {
             out = c2.toDataURL('image/jpeg', 0.32);
           }
           resolve(out);
-        } catch (_) { resolve(null); }
+        } catch (_) { resolve(dataUrl); } // keep original on failure — never wipe images
       };
-      img.onerror = () => resolve(null);
+      img.onerror = () => resolve(dataUrl); // keep original
       img.src = dataUrl;
     });
 
@@ -1188,7 +1197,8 @@ const App = {
       if (Array.isArray(node)) {
         for (let i = 0; i < node.length; i++) {
           if (typeof node[i] === 'string' && node[i].startsWith('data:image')) {
-            node[i] = await compressDataUrl(node[i]) || '';
+            const compressed = await compressDataUrl(node[i]);
+            if (compressed) node[i] = compressed; // never replace with empty
           } else {
             await walk(node[i]);
           }
@@ -1198,7 +1208,8 @@ const App = {
       for (const k of Object.keys(node)) {
         const v = node[k];
         if (typeof v === 'string' && v.startsWith('data:image')) {
-          node[k] = await compressDataUrl(v) || '';
+          const compressed = await compressDataUrl(v);
+          if (compressed) node[k] = compressed; // never wipe
         } else if (v && typeof v === 'object') {
           await walk(v);
         }
@@ -1214,7 +1225,7 @@ const App = {
         if (Array.isArray(node)) { node.forEach(stripImgs); return; }
         for (const k of Object.keys(node)) {
           if (typeof node[k] === 'string' && node[k].startsWith('data:image') && node[k].length > 5000) {
-            node[k] = ''; // drop oversized embedded image
+            /* keep image — Storage externalize will handle it */
           } else if (node[k] && typeof node[k] === 'object') stripImgs(node[k]);
         }
       };
@@ -1555,7 +1566,7 @@ const App = {
     // Light compress first (smaller uploads), then move images to Firebase Storage
     // so the Firestore exam document stays under the 1 MB hard limit.
     payload = this.normalizeQuestionPoints(payload);
-    payload = await this.compressAssessmentPayload(payload, 600 * 1024); // compress hard before size check
+    // compress runs after Storage externalize so images are not wiped
     delete payload._payloadBytes;
 
     let examId = window._editingExamId || sessionStorage.getItem('lvcc_editing_exam') || null;
@@ -1573,22 +1584,33 @@ const App = {
       try { sessionStorage.setItem('lvcc_editing_exam', examId); } catch (_) {}
     }
 
-    // Firestore hard limit is 1 MiB per document (Blaze does not raise this).
-    // Move large base64 images to Firebase Storage so the exam doc stays under the limit.
+    // Always move data:image (categorize, passage, etc.) to Firebase Storage FIRST.
+    // Never strip/wipe images on compress — that was deleting categorize photos on draft/publish.
+    const hasDataImages = (obj) => {
+      try { return JSON.stringify(obj).indexOf('data:image') >= 0; } catch (_) { return false; }
+    };
     let bytes = this._payloadBytes(payload);
-    if (bytes > 400 * 1024) {
+    if (hasDataImages(payload) || bytes > 200 * 1024) {
       try {
         payload = await this.externalizeAssessmentImages(payload, examId);
         bytes = this._payloadBytes(payload);
       } catch (storErr) {
         console.warn('Storage externalize', storErr);
-        throw new Error(
-          'Assessment is large (' + Math.round(bytes / 1024) + ' KB). Could not upload images to Storage: ' +
-          (storErr && storErr.message ? storErr.message : String(storErr)) +
-          '. Check: (1) Firebase Storage enabled (2) your existing assessments/{examId}/** rules published (3) storageBucket in firebase-config.js matches the project.'
-        );
+        // Soft fail only if still under 1MB after compress; hard fail if over
+        bytes = this._payloadBytes(payload);
+        if (bytes > 900 * 1024) {
+          throw new Error(
+            'Could not upload images to Storage (' + (storErr && storErr.message ? storErr.message : String(storErr)) + '). ' +
+            'Images would be lost or the doc exceeds 1 MB. Enable Storage, publish assessments/{examId}/** rules, set storageBucket.'
+          );
+        }
+        // keep data:images in doc if under limit (compress already ran)
       }
     }
+    // Light compress only for any remaining data:images (https Storage URLs left untouched)
+    try {
+      payload = await this.compressAssessmentPayload(payload, 900 * 1024);
+    } catch (_) {}
     bytes = this._payloadBytes(payload);
     if (bytes > 1048576) {
       throw new Error(
@@ -1596,6 +1618,20 @@ const App = {
         'Firestore max is 1 MB per document (hard limit). Reduce text/tables or split into smaller assessments.'
       );
     }
+    // Safety: never save empty image strings that used to be data/http URLs
+    try {
+      const fixEmpty = (node, parent, key) => {
+        if (!node || typeof node !== 'object') return;
+        if (Array.isArray(node)) { node.forEach((v,i) => fixEmpty(v, node, i)); return; }
+        Object.keys(node).forEach(k => {
+          if (k === 'image' && node[k] === '') {
+            // leave empty only if instructor deleted; no restore available here
+          }
+          if (node[k] && typeof node[k] === 'object') fixEmpty(node[k], node, k);
+        });
+      };
+      fixEmpty(payload);
+    } catch (_) {}
 
     if (status === 'published') {
       payload.contentVersion = Date.now();
@@ -3018,8 +3054,27 @@ const App = {
         inp.onchange = async () => {
           const [gi, ii] = inp.dataset.catItemImg.split(':').map(Number);
           const q = qAt(gi); if (!q?.items?.[ii]) return;
-          const dataUrl = await readFileAsDataUrl(inp.files && inp.files[0]);
+          let dataUrl = await readFileAsDataUrl(inp.files && inp.files[0]);
           if (!dataUrl) return;
+          // Soft client-side resize so draft/publish stays reliable (max ~640px wide)
+          try {
+            dataUrl = await new Promise((resolve) => {
+              const img = new Image();
+              img.onload = () => {
+                try {
+                  let w = img.width, h = img.height;
+                  const maxW = 640;
+                  if (w > maxW) { h = Math.round(h * (maxW / w)); w = maxW; }
+                  const c = document.createElement('canvas');
+                  c.width = w; c.height = h;
+                  c.getContext('2d').drawImage(img, 0, 0, w, h);
+                  resolve(c.toDataURL('image/jpeg', 0.72));
+                } catch (_) { resolve(dataUrl); }
+              };
+              img.onerror = () => resolve(dataUrl);
+              img.src = dataUrl;
+            });
+          } catch (_) {}
           q.items[ii].image = dataUrl;
           syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
         };

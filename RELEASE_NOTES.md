@@ -710,3 +710,9 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - MC/TF dynamic font sizes apply to .gq-option student buttons (short larger, long smaller)
 - PDF: slightly wider text wrap / less cell clipping
 - Total stats continue to follow max score points
+
+## v1.5.83
+- CRITICAL: Categorize (and all) images no longer wiped on Save as Draft / Publish
+- Root cause: compress step replaced failed/large data:image with empty string
+- Fix: upload data:images to Firebase Storage first; compress never blanks images; strip phase removed
+- Soft-resize categorize uploads on pick (640px) for reliability
