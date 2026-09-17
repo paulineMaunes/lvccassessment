@@ -127,8 +127,9 @@ const Regular = {
       case 'reorder':
         return { ...base, items: ['First', 'Second', 'Third'], correct: [0, 1, 2] };
       case 'categorize':
+        // points default: 1 per item
         return {
-          ...base,
+          ...base, pointsMode: 'each', pointsPerItem: 1, points: 2,
           prompt: 'Organize these items into the right categories.',
           categories: [
             { id: 'c1', name: 'Category A' },
@@ -351,15 +352,24 @@ const Regular = {
           <input class="form-control" data-pass-opt="${index}:${ki}:${oi}" value="${escapeHtml(o)}" placeholder="Option ${String.fromCharCode(65+oi)}" />
           <button type="button" class="btn btn-sm btn-muted" data-pass-del-opt="${index}:${ki}:${oi}">×</button>
         </div>`).join('');
-      return `<div class="card mt-1" style="padding:0.75rem">
+      const tabIdx = kq.tabIndex != null ? Number(kq.tabIndex) : (kq.passageTab != null ? Number(kq.passageTab) : 0);
+      const tabOpts = (q.passages || [{ title: 'Passage 1' }]).map((p, ti) =>
+        `<option value="${ti}" ${tabIdx === ti ? 'selected' : ''}>${escapeHtml(p.title || ('Passage ' + (ti + 1)))}</option>`
+      ).join('');
+      return `<div class="card mt-1 pass-q-card-tab" data-tab="${tabIdx}" style="padding:0.75rem">
+        <div style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;margin-bottom:0.35rem">
+          <label style="font-size:0.85rem">Tab
+            <select class="form-control" data-pass-q-tab="${index}:${ki}" style="width:auto;display:inline-block;min-width:8rem">${tabOpts}</select>
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:0.35rem;font-size:0.85rem">Points
+            <input type="number" min="0" step="0.5" class="form-control" style="width:70px" data-pass-q-points="${index}:${ki}" value="${kq.points != null ? kq.points : 1}" />
+          </label>
+        </div>
         <input class="form-control" data-pass-q-prompt="${index}:${ki}" value="${escapeHtml(kq.prompt||'')}" placeholder="Question prompt" />
         <select class="form-control mt-1" data-pass-q-type="${index}:${ki}">
           <option value="multiple" ${isMc?'selected':''}>Multiple Choice</option>
           <option value="essay" ${kq.type==='essay'?'selected':''}>Open-Ended Text</option>
         </select>
-        <label class="mt-1" style="display:inline-flex;align-items:center;gap:0.35rem">Points
-          <input type="number" min="0" step="0.5" class="form-control" style="width:70px" data-pass-q-points="${index}:${ki}" value="${kq.points != null ? kq.points : 1}" />
-        </label>
         ${isMc ? `<label class="mt-1" style="display:block"><input type="checkbox" data-pass-q-multi="${index}:${ki}" ${kq.multiCorrect ? 'checked' : ''}/> Multiple correct answers</label>
           <div class="mt-1">${opts}<button type="button" class="btn btn-sm btn-ghost" data-pass-add-opt="${index}:${ki}">+ Add Option</button></div>`
           : `<textarea class="form-control mt-1" data-pass-rubric="${index}:${ki}" rows="2" placeholder="Suggested answer / rubric">${escapeHtml(kq.correct||kq.rubric||'')}</textarea>
@@ -822,20 +832,17 @@ const Regular = {
     return `<div class="match-builder" data-gidx="${index}">
       <div style="display:flex;flex-wrap:wrap;gap:0.75rem;align-items:flex-start">
         <textarea class="form-control q-prompt" data-gidx="${index}" rows="2" style="flex:1;min-width:200px" placeholder="Instructions (e.g. Match Column A with Column B)">${escapeHtml(q.prompt || '')}</textarea>
-        <label style="white-space:nowrap">Points
-          <input type="number" min="0" step="0.5" class="form-control points-input" data-points="${index}" value="${q.points != null ? q.points : left.length}" style="width:80px;display:inline-block"/>
-        </label>
       </div>
-      <p class="text-muted" style="font-size:0.8rem">1 point per correct pair by default. Set answer key below.</p>
+      <p class="text-muted" style="font-size:0.8rem">Default: 1 point per correct pair (Total = number of Column A items).</p>
       <div class="points-row" style="display:flex;flex-wrap:wrap;gap:0.75rem;align-items:center;margin-bottom:0.5rem">
         <label>Points mode
           <select class="form-control" data-match-points-mode="${index}" style="width:auto;display:inline-block">
-            <option value="all" ${(q.pointsMode!=='each')?'selected':''}>Full points if all matches correct</option>
-            <option value="each" ${q.pointsMode==='each'?'selected':''}>Points per correct match</option>
+            <option value="each" ${(q.pointsMode!=='all')?'selected':''}>Points per correct match</option>
+            <option value="all" ${q.pointsMode==='all'?'selected':''}>Full points if all matches correct</option>
           </select>
         </label>
         <label>Per match <input type="number" min="0" step="0.5" class="form-control" data-match-per="${index}" value="${q.pointsPerItem ?? 1}" style="width:70px;display:inline-block"/></label>
-        <label>Total <input type="number" min="0" step="0.5" class="form-control" data-points="${index}" value="${q.points != null ? q.points : left.length}" style="width:70px;display:inline-block"/></label>
+        <label>Total <input type="number" min="0" step="0.5" class="form-control" data-points="${index}" data-match-total="1" value="${(q.points != null && q.points > 0) ? q.points : left.length}" style="width:70px;display:inline-block"/></label>
       </div>
       <div class="match-cfg-cols">
         <div><strong>Column A</strong>${leftRows}
@@ -1047,9 +1054,11 @@ const Regular = {
     const placed = new Set(Object.keys(ans));
     const leftItems = items.filter(it => !placed.has(it.id) && !placed.has(it.name));
     const chipHtml = (it, placedCls = '') => {
-      const hasImg = it.image && String(it.image).startsWith('data:image');
+      const imgSrc = it.image && String(it.image).trim();
+      // data: URLs or Firebase Storage / any http(s) image URL
+      const hasImg = !!(imgSrc && (imgSrc.startsWith('data:image') || /^https?:\/\//i.test(imgSrc)));
       const body = hasImg
-        ? `<img class="cat-chip-img" src="${escapeHtml(it.image)}" alt="${escapeHtml(it.name||'')}" draggable="false" /><span class="cat-chip-caption">${escapeHtml(it.name||'')}</span>`
+        ? `<img class="cat-chip-img" src="${escapeHtml(imgSrc)}" alt="${escapeHtml(it.name||'')}" draggable="false" /><span class="cat-chip-caption">${escapeHtml(it.name||'')}</span>`
         : `<span class="cat-chip-caption">${escapeHtml(it.name||'Item')}</span>`;
       return `<div class="cat-item-chip ${placedCls} ${hasImg ? 'has-img' : ''}" draggable="true" data-item-id="${escapeHtml(it.id)}" data-item-name="${escapeHtml(it.name||'')}">${body}</div>`;
     };
@@ -1905,7 +1914,7 @@ const Regular = {
       return { earned: ok ? pts : 0, max: pts, ok };
     }
 
-    // Categorize: answer map itemId -> categoryId
+    // Categorize: 1 point per correct item by default (or pointsPerItem)
     if (q.type === 'categorize') {
       const items = q.items || [];
       if (!items.length) return { earned: 0, max: pts, ok: false };
@@ -1917,37 +1926,46 @@ const Regular = {
         if (studentCat != null && expected != null && String(studentCat) === String(expected)) right++;
         else if (studentCat != null && expected != null && this.normAns(studentCat) === this.normAns(expected)) right++;
       });
-      const per = Number(q.pointsPerItem) > 0 ? Number(q.pointsPerItem) : 1;
-      const mode = q.pointsMode || 'each';
-      if (mode === 'each' || q.pointsPerItem != null) {
-        const max = items.length * per;
-        return { earned: right * per, max, ok: right === items.length };
+      const n = items.length;
+      let per = Number(q.pointsPerItem);
+      if (!(per > 0)) {
+        // derive from total points if instructor set total for all items
+        if (Number(q.points) > 0 && n > 0 && q.pointsMode === 'all') per = Number(q.points) / n;
+        else per = 1;
       }
-      const maxPts = Number(q.points) > 0 ? Number(q.points) : items.length * per;
-      return { earned: right === items.length ? maxPts : 0, max: maxPts, ok: right === items.length };
+      // Default behavior: points per correct item (6 items → 6 max)
+      if (q.pointsMode === 'all') {
+        const maxPts = Number(q.points) > 0 ? Number(q.points) : n * per;
+        return { earned: right === n ? maxPts : 0, max: maxPts, ok: right === n };
+      }
+      // pointsMode 'each' (default) or pointsPerItem set
+      const max = n * per;
+      return { earned: right * per, max, ok: right === n };
     }
 
-    // Match: answer map leftIndex -> rightIndex; correct is array of right indices
+    // Match: default 1 point per correct pair (8 pairs → 8 points)
     if (q.type === 'match') {
       const left = q.left || [];
       const correct = Array.isArray(q.correct) ? q.correct : [];
-      const ans = (resp && typeof resp === 'object') ? resp : {};
+      const ans = (resp && typeof resp === 'object' && !Array.isArray(resp)) ? resp : {};
       let right = 0;
       left.forEach((_, i) => {
-        const student = ans[i] != null ? ans[i] : ans[String(i)];
-        if (student == null || student === '') return;
+        let student = ans[i];
+        if (student === undefined) student = ans[String(i)];
+        if (student === undefined || student === null || student === '') return;
         const expected = correct[i];
         if (Number(student) === Number(expected)) right++;
       });
-      const per = Number(q.pointsPerItem) > 0 ? Number(q.pointsPerItem) : 1;
-      const mode = q.pointsMode || 'each';
-      if (mode === 'each') {
-        const max = left.length * per;
-        return { earned: right * per, max, ok: right === left.length && left.length > 0 };
+      const n = left.length || 0;
+      let per = Number(q.pointsPerItem);
+      if (!(per > 0)) per = 1;
+      if (q.pointsMode === 'all') {
+        const maxPts = Number(q.points) > 0 ? Number(q.points) : (n * per);
+        return { earned: (right === n && n > 0) ? maxPts : 0, max: maxPts, ok: right === n && n > 0 };
       }
-      // full points only if all correct
-      const maxPts = Number(q.points) > 0 ? Number(q.points) : left.length * per;
-      return { earned: right === left.length && left.length ? maxPts : 0, max: maxPts, ok: right === left.length && left.length > 0 };
+      // each (default): n pairs → n * per points
+      const max = n * per;
+      return { earned: right * per, max, ok: right === n && n > 0 };
     }
 
     // Table fill: cells map "r-c" -> value

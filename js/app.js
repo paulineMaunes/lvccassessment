@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.79
+ * v1.5.80
  */
 
 const App = {
@@ -253,23 +253,37 @@ const App = {
   syncPassageEditorsFromDom() {
     try {
       document.querySelectorAll('[data-pass-html]').forEach(ed => {
-        const gi = Number(ed.getAttribute('data-pass-html'));
+        const gi = Number(ed.getAttribute('data-pass-html') || ed.dataset.passHtml);
         const q = (window._builderQuestions || [])[gi];
         if (!q) return;
-        const ti = Number(ed.getAttribute('data-pass-active-tab') || 0) || 0;
-        q.passages = q.passages || [];
-        if (!q.passages[ti]) q.passages[ti] = { id: 'p' + (ti + 1), title: 'Passage ' + (ti + 1), html: '' };
+        const ti = Number(ed.getAttribute('data-pass-active-tab') || ed.dataset.passActiveTab || 0) || 0;
+        q.passages = q.passages || [{ id: 'p1', title: 'Passage 1', html: q.passageHtml || '' }];
+        while (q.passages.length <= ti) {
+          const n = q.passages.length + 1;
+          q.passages.push({ id: 'p' + n, title: 'Passage ' + n, html: '' });
+        }
         q.passages[ti].html = ed.innerHTML;
         if (ti === 0) q.passageHtml = ed.innerHTML;
-        // also persist nested question prompts/options from DOM
-        document.querySelectorAll(`[data-pass-q-prompt^="${gi}:"]`).forEach(inp => {
-          const ki = Number(String(inp.getAttribute('data-pass-q-prompt')).split(':')[1]);
-          if (q.questions && q.questions[ki]) q.questions[ki].prompt = inp.value;
-        });
-        document.querySelectorAll(`[data-pass-q-points^="${gi}:"]`).forEach(inp => {
-          const ki = Number(String(inp.getAttribute('data-pass-q-points')).split(':')[1]);
-          if (q.questions && q.questions[ki]) q.questions[ki].points = Number(inp.value) || 1;
-        });
+      });
+      // Sync nested passage question prompts/options from DOM so they are not lost on re-render
+      document.querySelectorAll('[data-pass-q-prompt]').forEach(el => {
+        const [gi, ki] = String(el.dataset.passQPrompt || '').split(':').map(Number);
+        const q = (window._builderQuestions || [])[gi];
+        if (q && q.questions && q.questions[ki]) q.questions[ki].prompt = el.value;
+      });
+      document.querySelectorAll('[data-pass-opt]').forEach(el => {
+        const parts = String(el.dataset.passOpt || '').split(':').map(Number);
+        if (parts.length < 3) return;
+        const [gi, ki, oi] = parts;
+        const q = (window._builderQuestions || [])[gi];
+        if (q && q.questions && q.questions[ki] && Array.isArray(q.questions[ki].options)) {
+          q.questions[ki].options[oi] = el.value;
+        }
+      });
+      document.querySelectorAll('[data-pass-q-points]').forEach(el => {
+        const [gi, ki] = String(el.dataset.passQPoints || '').split(':').map(Number);
+        const q = (window._builderQuestions || [])[gi];
+        if (q && q.questions && q.questions[ki]) q.questions[ki].points = Number(el.value) || 1;
       });
     } catch (_) {}
   },
@@ -476,7 +490,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.79</div>
+          <div class="app-version">Build v1.5.80</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -618,7 +632,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.79</div>
+              <div class="app-version">v1.5.80</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -1094,7 +1108,7 @@ const App = {
    */
   async compressAssessmentPayload(payload, maxBytes = 900000) {
     const clone = JSON.parse(JSON.stringify(payload));
-    const compressDataUrl = (dataUrl, maxW = 640, quality = 0.55) => new Promise((resolve) => {
+    const compressDataUrl = (dataUrl, maxW = 480, quality = 0.45) => new Promise((resolve) => {
       if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image')) {
         resolve(dataUrl); return;
       }
@@ -1296,6 +1310,42 @@ const App = {
     return Promise.resolve();
   },
 
+
+  /** Ensure match/categorize/passage nested points are consistent before save/grade */
+  normalizeQuestionPoints(payload) {
+    try {
+      const secs = payload.sections || [];
+      secs.forEach(sec => {
+        (sec.questions || []).forEach(q => {
+          if (!q) return;
+          if (q.type === 'categorize') {
+            const n = (q.items || []).length || 0;
+            const per = Number(q.pointsPerItem) > 0 ? Number(q.pointsPerItem) : 1;
+            q.pointsMode = q.pointsMode || 'each';
+            q.pointsPerItem = per;
+            if (q.pointsMode === 'each') q.points = n * per;
+            else if (!(Number(q.points) > 0)) q.points = n * per;
+          }
+          if (q.type === 'match') {
+            const n = (q.left || []).length || 0;
+            const per = Number(q.pointsPerItem) > 0 ? Number(q.pointsPerItem) : 1;
+            q.pointsMode = q.pointsMode || 'each';
+            q.pointsPerItem = per;
+            if (q.pointsMode !== 'all') q.points = n * per;
+            else if (!(Number(q.points) > 0)) q.points = n * per;
+          }
+          if ((q.type === 'passage' || q.isPassageSet) && Array.isArray(q.questions)) {
+            q.questions.forEach(nq => {
+              if (!(Number(nq.points) > 0)) nq.points = 1;
+            });
+            // parent points = sum of nested (for display)
+            q.points = q.questions.reduce((s, nq) => s + (Number(nq.points) || 1), 0);
+          }
+        });
+      });
+    } catch (_) {}
+    return payload;
+  },
   async saveAssessment(status = 'draft', schedule = null) {
     try { this.syncPassageEditorsFromDom(); } catch (_) {}
     let payload = this.collectAssessmentForm(status);
@@ -1459,7 +1509,8 @@ const App = {
 
     // Light compress first (smaller uploads), then move images to Firebase Storage
     // so the Firestore exam document stays under the 1 MB hard limit.
-    payload = await this.compressAssessmentPayload(payload, 900 * 1024); // keep under ~1MB Firestore doc
+    payload = this.normalizeQuestionPoints(payload);
+    payload = await this.compressAssessmentPayload(payload, 600 * 1024); // compress hard before size check
     delete payload._payloadBytes;
 
     let examId = window._editingExamId || sessionStorage.getItem('lvcc_editing_exam') || null;
@@ -1480,7 +1531,7 @@ const App = {
     // Firestore hard limit is 1 MiB per document (Blaze does not raise this).
     // Move large base64 images to Firebase Storage so the exam doc stays under the limit.
     let bytes = this._payloadBytes(payload);
-    if (bytes > 850 * 1024) {
+    if (bytes > 400 * 1024) {
       try {
         payload = await this.externalizeAssessmentImages(payload, examId);
         bytes = this._payloadBytes(payload);
@@ -2160,9 +2211,12 @@ const App = {
           if (!(q.points > 0)) q.points = 1;
           if (q.type === 'match' && (q.pointsMode || 'each') === 'each') {
             const n = (q.left || []).length || 1;
-            const per = Number(q.pointsPerItem) || 1;
-            // keep pointsPerItem in sync when user edits total
             if (n > 0) q.pointsPerItem = q.points / n;
+          }
+          if (q.type === 'categorize') {
+            const n = (q.items || []).length || 1;
+            q.pointsMode = q.pointsMode || 'each';
+            if (n > 0 && (q.pointsMode === 'each')) q.pointsPerItem = q.points / n;
           }
         };
       });
@@ -2487,10 +2541,28 @@ const App = {
         };
       });
 
+
+      const passActiveTab = (ed) => {
+        if (!ed) return 0;
+        const t = Number(ed.getAttribute('data-pass-active-tab') || ed.dataset.passActiveTab || 0);
+        return Number.isFinite(t) ? t : 0;
+      };
+      const writePassageHtml = (q, ed) => {
+        if (!q || !ed) return;
+        const ti = passActiveTab(ed);
+        const html = ed.innerHTML;
+        q.passages = q.passages || [{ id: 'p1', title: 'Passage 1', html: q.passageHtml || '' }];
+        while (q.passages.length <= ti) {
+          const n = q.passages.length + 1;
+          q.passages.push({ id: 'p' + n, title: 'Passage ' + n, html: '' });
+        }
+        q.passages[ti].html = html;
+        if (ti === 0) q.passageHtml = html;
+      };
       // Passage
       box.querySelectorAll('[data-pass-html]').forEach(el => {
-        el.oninput = () => { const q = qAt(el.dataset.passHtml); if (q) { q.passageHtml = el.innerHTML; if (q.passages && q.passages[0]) q.passages[0].html = el.innerHTML; } };
-        el.onblur = () => { const q = qAt(el.dataset.passHtml); if (q) { q.passageHtml = el.innerHTML; if (q.passages && q.passages[0]) q.passages[0].html = el.innerHTML; } };
+        el.oninput = () => { const q = qAt(el.dataset.passHtml); writePassageHtml(q, el); };
+        el.onblur = () => { const q = qAt(el.dataset.passHtml); writePassageHtml(q, el); };
       });
       box.querySelectorAll('[data-rte]').forEach(btn => {
         btn.onclick = (e) => {
@@ -2512,7 +2584,7 @@ const App = {
             const url = window.prompt('Image URL');
             if (url) document.execCommand('insertImage', false, url);
           }
-          const q = qAt(gi); if (q) { q.passageHtml = ed.innerHTML; if (q.passages && q.passages[0]) q.passages[0].html = ed.innerHTML; }
+          const q = qAt(gi); writePassageHtml(q, ed);
         };
       });
       box.querySelectorAll('[data-pass-upload]').forEach(inp => {
@@ -2600,7 +2672,7 @@ const App = {
               });
             }, 50);
             const q = qAt(gi);
-            if (q) { q.passageHtml = ed.innerHTML; if (q.passages && q.passages[0]) q.passages[0].html = ed.innerHTML; }
+            if (q) { q.passageHtml = ed.innerHTML; writePassageHtml(q, ed); }
           }
           inp.value = '';
         };
@@ -2805,6 +2877,11 @@ const App = {
           q.items = q.items || [];
           const firstCat = (q.categories && q.categories[0] && q.categories[0].id) || '';
           q.items.push({ id: 'i' + Date.now(), name: '', category: firstCat, image: '' });
+          // Auto total points = items × points per item
+          q.pointsMode = q.pointsMode || 'each';
+          const per = Number(q.pointsPerItem) > 0 ? Number(q.pointsPerItem) : 1;
+          q.pointsPerItem = per;
+          q.points = (q.items.length) * per;
           syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
           setTimeout(() => App.focusLastAddedBuilderItem(
             document.querySelector(`[data-cat-add-item="${gi}"]`)?.closest('.categorize-builder-wrap, .card'),
@@ -7118,7 +7195,8 @@ const App = {
                 <div class="attempt-stat"><div class="val">${st.unattempted}</div><div class="lbl">Unattempted</div></div>
                 <div class="attempt-stat"><div class="val">${st.accuracy}%</div><div class="lbl">Accuracy</div></div>
               </div>
-              <p style="margin-top:1rem">Score: <strong>${st.correct}</strong> / ${st.total}</p>
+              <p style="margin-top:1rem">Score: <strong>${sc}</strong> / ${mx}</p>
+              <p class="text-muted" style="font-size:0.9rem">Items: ${st.correct} correct · ${st.incorrect} incorrect · ${st.unattempted} unattempted (of ${st.total})</p>
               <div class="action-btns" style="margin-top:1.25rem">
                 <button class="btn btn-primary" id="sec-test-close">Close</button>
               </div>

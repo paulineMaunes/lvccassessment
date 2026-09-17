@@ -687,3 +687,11 @@ If features seem missing, replace **all** app files from the zip (not only one J
 ## v1.5.79
 - Fix: externalizeAssessmentImages was missing (Could not save / is not a function) — method restored for Storage image offload
 - Assessment config: focusLastAddedBuilderItem — after adding row/option (table, match, MC, categorize, passage, wordbox) auto-scrolls and focuses first editable field
+
+## v1.5.80
+- CRITICAL scoring: Categorize/Match default to points-per-item (6 items → 6 pts; 8 matches → 8 pts). Section test Score uses actual points, not item count 1/1
+- Categorize student view: show images from Firebase Storage URLs (not only data:image)
+- Passage tabs: never overwrite tab 1 when editing tab 3 — write to active tab only; sync DOM before every re-render
+- Auto-update categorize total points when adding items or changing points-per-item
+- normalizeQuestionPoints on save so configured totals stick
+- More aggressive image compress + externalize at 400KB to fix 1MB save failures
