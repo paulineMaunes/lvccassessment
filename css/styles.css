@@ -1168,7 +1168,7 @@ textarea.form-control {
 
 @media (max-width: 900px) {
   .live-layout-fixed { height: auto; overflow: visible; }
-  .live-main .live-grid { max-height: 50vh; }
+  .live-main .live-grid { max-height: none; }
   .integrity-panel-fixed { max-height: 40vh; }
 }
 
@@ -8086,4 +8086,79 @@ svg.match-lines {
   justify-content: center !important;
   text-align: center !important;
   overflow: hidden;
+}
+
+
+/* v1.5.85 live right panel full height under page header */
+.live-dashboard-page,
+#app:has(.live-layout) {
+  display: flex;
+  flex-direction: column;
+  min-height: 100svh;
+}
+.live-header-bar {
+  flex-shrink: 0;
+}
+.live-layout.live-3panel,
+.live-layout.live-layout-fixed {
+  flex: 1 1 auto;
+  height: calc(100svh - 7.5rem) !important;
+  max-height: calc(100svh - 7.5rem) !important;
+  min-height: 0 !important;
+  align-items: stretch !important;
+  overflow: hidden !important;
+}
+.live-right-panel.integrity-panel-fixed {
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+  align-self: stretch !important;
+}
+.live-right-panel .integrity-list-flex {
+  flex: 1 1 45% !important;
+  min-height: 120px !important;
+  overflow-y: auto !important;
+}
+.live-right-panel .live-msg-list {
+  flex: 1 1 45% !important;
+  min-height: 120px !important;
+  max-height: none !important;
+  overflow-y: auto !important;
+}
+.live-msg-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.55rem 0.65rem;
+  border: none;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.live-msg-row.unread {
+  background: rgba(56, 126, 195, 0.08);
+}
+.live-msg-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  margin-top: 0.4rem;
+  flex-shrink: 0;
+}
+.live-msg-dot.read {
+  background: transparent;
+}
+.live-msg-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+  flex: 1;
 }

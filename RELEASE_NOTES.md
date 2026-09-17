@@ -775,3 +775,11 @@ If features seem missing, replace **all** app files from the zip (not only one J
 
 ## v1.5.93
 - Reopen Previous: "Allow continue & Skip Email" — enables selected students without sending email (still runs schedule + live reopen)
+
+## v1.5.94
+- Fix schedule: End date/time is the assessment window; Time limit (minutes) is per-student only (no longer overwrites End to start+60m)
+- Reopen student grid: use saved session score/stats when live compute is empty; fix latest-attempt timestamp compare
+
+## v1.5.95
+- Live dashboard: no page scroll; middle grid scrolls to show all student cards; right panel full height (integrity + messages each scroll)
+- Message popup: student/instructor avatars beside name; thread oldest → newest

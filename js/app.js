@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.93
+ * v1.5.95
  */
 
 const App = {
@@ -634,7 +634,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.93</div>
+          <div class="app-version">Build v1.5.95</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -780,7 +780,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.93</div>
+              <div class="app-version">v1.5.95</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -4221,13 +4221,21 @@ const App = {
       sessions = sessions.filter(s => !s.isMock && !String(s.id).startsWith('test_'));
       // latest attempt per student email
       const byEmail = {};
+      const tsMs = (v) => {
+        if (v == null) return 0;
+        if (typeof v === 'number') return v;
+        if (v.toMillis) return v.toMillis();
+        if (v.seconds) return v.seconds * 1000;
+        const n = Date.parse(v);
+        return isNaN(n) ? 0 : n;
+      };
       sessions.forEach(s => {
         const em = (s.studentEmail || s.id || '').toLowerCase();
         if (!em) return;
-        const t = (s.submittedAt && s.submittedAt.toMillis && s.submittedAt.toMillis()) || s.startedAt || 0;
-        if (!byEmail[em] || t > ((byEmail[em].submittedAt && byEmail[em].submittedAt.toMillis && byEmail[em].submittedAt.toMillis()) || byEmail[em].startedAt || 0)) {
-          byEmail[em] = s;
-        }
+        const t = Math.max(tsMs(s.submittedAt), tsMs(s.startedAt), tsMs(s.createdAt), tsMs(s.lastUpdate));
+        const prev = byEmail[em];
+        const pt = prev ? Math.max(tsMs(prev.submittedAt), tsMs(prev.startedAt), tsMs(prev.createdAt), tsMs(prev.lastUpdate)) : -1;
+        if (!prev || t >= pt) byEmail[em] = s;
       });
       const list = Object.values(byEmail).sort((a, b) => (a.studentName || a.studentEmail || '').localeCompare(b.studentName || b.studentEmail || ''));
       UI.hideLoading();
@@ -4242,17 +4250,28 @@ const App = {
         w.className = 'modal-overlay ui-modal-overlay';
         w.style.zIndex = '50000';
         const rows = list.map(s => {
-          const st = this.computeAttemptStats(s, examMeta) || {};
-          const total = st.total != null ? st.total : 0;
-          const correct = st.correct != null ? st.correct : 0;
-          const wrong = st.incorrect != null ? st.incorrect : 0;
-          const un = st.unattempted != null ? st.unattempted : 0;
-          const acc = st.accuracy != null ? st.accuracy + '%' : '—';
+          let st = {};
+          try { st = this.computeAttemptStats(s, examMeta) || {}; } catch (_) { st = {}; }
+          // Prefer computed; fall back to fields saved on session at submit
+          const total = (st.total != null && st.total > 0) ? st.total
+            : (Number(s.maxScore) || Number(s.totalQuestions) || Number(s.stats && s.stats.total) || 0);
+          const correct = (st.correct != null && (st.total > 0 || st.correct > 0)) ? st.correct
+            : (Number(s.score) || Number(s.correctCount) || Number(s.stats && s.stats.correct) || 0);
+          const wrong = (st.incorrect != null && (st.total > 0 || st.incorrect > 0)) ? st.incorrect
+            : (Number(s.incorrectCount) || Number(s.stats && s.stats.incorrect) || 0);
+          const un = (st.unattempted != null && (st.total > 0 || st.unattempted > 0)) ? st.unattempted
+            : (Number(s.unattemptedCount) || Number(s.stats && s.stats.unattempted) || 0);
+          let acc = st.accuracy;
+          if (acc == null || (total === 0 && correct === 0)) {
+            acc = s.accuracy != null ? Number(s.accuracy) : (total > 0 ? Math.round((correct / total) * 100) : 0);
+          }
+          const accStr = (acc != null && !isNaN(acc)) ? (acc + '%') : '—';
+          s._rpStats = { total, correct, incorrect: wrong, unattempted: un, accuracy: acc };
           const search = ((s.studentName || '') + ' ' + (s.studentEmail || '')).toLowerCase();
           return `<tr class="rp-row" data-un="${un}" data-wrong="${wrong}" data-search="${escapeHtml(search)}">
             <td><input type="checkbox" class="rp-sid" value="${s.id}"/></td>
             <td><strong>${escapeHtml(s.studentName || '—')}</strong><br/><span class="text-muted" style="font-size:0.78rem">${escapeHtml(s.studentEmail || '')}</span></td>
-            <td>${total}</td><td>${correct}</td><td>${wrong}</td><td>${un}</td><td>${acc}</td>
+            <td>${total}</td><td>${correct}</td><td>${wrong}</td><td>${un}</td><td>${accStr}</td>
             <td><button type="button" class="btn btn-sm btn-ghost rp-view" data-sid="${s.id}">View Summary</button></td>
           </tr>`;
         }).join('');
@@ -9564,10 +9583,11 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
         <h2>Publish schedule</h2>
         <div class="form-group"><label>Start date & time</label>
           <input type="datetime-local" id="sched-start" class="form-control" value="${toLocal(now)}" /></div>
-        <div class="form-group"><label>End date & time</label>
+        <div class="form-group"><label>End date & time (assessment window closes)</label>
           <input type="datetime-local" id="sched-end" class="form-control" value="${toLocal(later)}" /></div>
-        <div class="form-group"><label>Time limit (minutes)</label>
-          <input type="number" id="sched-mins" class="form-control" min="1" value="60" /></div>
+        <div class="form-group"><label>Time limit per student (minutes) — auto-submit from each student's start</label>
+          <input type="number" id="sched-mins" class="form-control" min="1" value="60" />
+          <p class="text-muted" style="font-size:0.8rem;margin:0.35rem 0 0">Does not change the end date above. Live window stays open until End date &amp; time.</p></div>
         <div class="form-group">
           <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
             <input type="checkbox" id="sched-randomize" />
@@ -9583,11 +9603,14 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
       document.getElementById('sched-cancel').onclick = () => { UI.close(); resolve(null); };
       document.getElementById('sched-ok').onclick = () => {
         const startAt = new Date(document.getElementById('sched-start').value).getTime();
-        let endAt = new Date(document.getElementById('sched-end').value).getTime();
-        const mins = Number(document.getElementById('sched-mins').value) || 0;
-        if (mins > 0) endAt = startAt + mins * 60000;
+        const endAt = new Date(document.getElementById('sched-end').value).getTime();
+        // Time limit = per-student auto-submit minutes (does NOT change window end)
+        let durationMinutes = Number(document.getElementById('sched-mins').value);
+        if (!durationMinutes || durationMinutes < 1) {
+          durationMinutes = Math.max(1, Math.round((endAt - startAt) / 60000));
+        }
         if (!startAt || !endAt || endAt <= startAt) {
-          UI.alert('End must be after start.', 'Schedule');
+          UI.alert('End date & time must be after start.', 'Schedule');
           return;
         }
         if (startAt < Date.now() - 60000) {
@@ -9599,7 +9622,7 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
         resolve({
           startAt,
           endAt,
-          durationMinutes: Math.max(1, Math.round((endAt - startAt) / 60000)),
+          durationMinutes: Math.max(1, durationMinutes),
           randomizeQuestions
         });
       };

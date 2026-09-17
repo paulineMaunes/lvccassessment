@@ -257,11 +257,13 @@ const Dashboard = {
             <input type="search" id="integrity-filter" class="form-control" placeholder="Filter name, email..." />
           </div>
           <div id="integrity-list" class="integrity-list integrity-list-flex"><p class="text-muted">No events yet.</p></div>
-          <div class="integrity-panel-head" style="margin-top:0.35rem;border-top:1px solid var(--border);padding-top:0.5rem">
-            <strong>Messages</strong>
-            <span class="text-muted" style="font-size:0.75rem">Latest first · unread ●</span>
+          <div class="live-msg-section" id="live-msg-panel">
+            <div class="integrity-panel-head" style="flex:0 0 auto;border-top:1px solid var(--border);padding-top:0.5rem">
+              <strong>Messages</strong>
+              <span class="text-muted" style="font-size:0.75rem">Unread ● · click for full thread</span>
+            </div>
+            <div id="live-msg-list" class="live-msg-list integrity-list"><p class="text-muted">No student messages yet.</p></div>
           </div>
-          <div id="live-msg-list" class="live-msg-list integrity-list"><p class="text-muted">No student messages yet.</p></div>
         </aside>
       </div>
     `;
@@ -1367,36 +1369,54 @@ const Dashboard = {
     hist.sort((a, b) => (a.at || 0) - (b.at || 0));
 
     const name = s.studentName || s.studentEmail || 'Student';
+    const stuPhoto = s.studentPhoto || s.photoURL || s.avatarUrl || '';
+    const instrPhoto = (window.Auth && Auth.userProfile && (Auth.userProfile.photoURL || Auth.userProfile.photo)) || (window.Auth && Auth.currentUser && Auth.currentUser.photoURL) || '';
+    const instrName = (window.Auth && Auth.userProfile && Auth.userProfile.name) || 'Instructor';
+    const avatarHtml = (url, label) => url
+      ? `<img src="${escapeHtml(url)}" alt="" style="width:40px;height:40px;border-radius:50%;object-fit:cover;flex-shrink:0" onerror="this.style.display='none'" />`
+      : `<span style="width:40px;height:40px;border-radius:50%;background:var(--primary,#387EC3);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:0.85rem;flex-shrink:0">${escapeHtml((label || '?').slice(0,1).toUpperCase())}</span>`;
+    const renderMsgBubble = (m) => {
+      const isInstr = m.from === 'instructor';
+      const who = isInstr ? (instrName || 'Instructor') : name;
+      const photo = isInstr ? instrPhoto : stuPhoto;
+      const align = isInstr ? 'flex-end' : 'flex-start';
+      const bg = isInstr ? 'var(--primary,#387EC3)' : 'var(--border,#e2e8f0)';
+      const color = isInstr ? '#fff' : 'inherit';
+      const t = m.at ? new Date(m.at).toLocaleString() : '';
+      const rowDir = isInstr ? 'row-reverse' : 'row';
+      return `<div style="align-self:${align};max-width:90%;display:flex;flex-direction:${rowDir};gap:0.5rem;align-items:flex-start">
+        ${avatarHtml(photo, who)}
+        <div style="min-width:0">
+          <div style="font-size:0.75rem;opacity:0.75;margin-bottom:0.15rem"><strong>${escapeHtml(who)}</strong> · ${escapeHtml(t)}</div>
+          <div style="background:${bg};color:${color};padding:0.55rem 0.75rem;border-radius:10px;white-space:pre-wrap">${escapeHtml(m.text || '')}</div>
+        </div>
+      </div>`;
+    };
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay ui-modal-overlay msg-history-overlay';
     overlay.style.cssText = 'z-index:60000;position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.55)';
     overlay.innerHTML = `
       <div class="msg-history-panel" style="width:min(720px,96vw);height:min(100svh,900px);max-height:100svh;background:var(--card-bg,#fff);border-radius:12px;display:flex;flex-direction:column;overflow:hidden">
-        <div style="padding:1rem 1.25rem;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
-          <div>
-            <strong>Messages — ${escapeHtml(name)}</strong>
-            <div class="text-muted" style="font-size:0.85rem">${escapeHtml(s.studentEmail || '')}</div>
+        <div style="padding:1rem 1.25rem;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:0.75rem">
+          <div style="display:flex;align-items:center;gap:0.65rem;min-width:0">
+            ${avatarHtml(stuPhoto, name)}
+            <div style="min-width:0">
+              <strong style="display:block">${escapeHtml(name)}</strong>
+              <div class="text-muted" style="font-size:0.85rem;overflow:hidden;text-overflow:ellipsis">${escapeHtml(s.studentEmail || '')}</div>
+            </div>
           </div>
           <button type="button" class="btn btn-ghost" id="msg-hist-close">Close</button>
         </div>
         <div id="msg-hist-thread" style="flex:1;overflow-y:auto;padding:1rem;display:flex;flex-direction:column;gap:0.75rem">
-          ${hist.length ? hist.map(m => {
-            const who = m.from === 'instructor' ? 'You' : 'Student';
-            const align = m.from === 'instructor' ? 'flex-end' : 'flex-start';
-            const bg = m.from === 'instructor' ? 'var(--primary,#387EC3)' : 'var(--border,#e2e8f0)';
-            const color = m.from === 'instructor' ? '#fff' : 'inherit';
-            const t = m.at ? new Date(m.at).toLocaleString() : '';
-            return `<div style="align-self:${align};max-width:85%">
-              <div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.15rem">${escapeHtml(who)} · ${escapeHtml(t)}</div>
-              <div style="background:${bg};color:${color};padding:0.65rem 0.85rem;border-radius:10px;white-space:pre-wrap">${escapeHtml(m.text || '')}</div>
-            </div>`;
-          }).join('') : '<p class="text-muted">No messages in this thread.</p>'}
+          ${hist.length ? hist.map(renderMsgBubble).join('') : '<p class="text-muted">No messages in this thread.</p>'}
         </div>
-        <div style="padding:0.75rem 1rem;border-top:1px solid var(--border);display:flex;gap:0.5rem">
+        <div style="padding:0.75rem 1rem;border-top:1px solid var(--border);display:flex;gap:0.5rem;align-items:flex-end">
+          ${avatarHtml(instrPhoto, instrName)}
           <textarea id="msg-hist-reply" class="form-control" rows="2" placeholder="Reply to student…" style="flex:1;resize:vertical"></textarea>
           <button type="button" class="btn btn-primary" id="msg-hist-send">Send</button>
         </div>
       </div>`;
+
     document.body.appendChild(overlay);
     const close = () => { overlay.remove(); this.refreshLiveMessageList(); };
     overlay.querySelector('#msg-hist-close').onclick = close;
@@ -1416,17 +1436,8 @@ const Dashboard = {
       hist.sort((a, b) => (a.at || 0) - (b.at || 0));
       const thread = overlay.querySelector('#msg-hist-thread');
       if (!thread) return;
-      thread.innerHTML = hist.length ? hist.map(m => {
-        const who = m.from === 'instructor' ? 'You' : 'Student';
-        const align = m.from === 'instructor' ? 'flex-end' : 'flex-start';
-        const bg = m.from === 'instructor' ? 'var(--primary,#387EC3)' : 'var(--border,#e2e8f0)';
-        const color = m.from === 'instructor' ? '#fff' : 'inherit';
-        const t = m.at ? new Date(m.at).toLocaleString() : '';
-        return `<div style="align-self:${align};max-width:85%">
-          <div style="font-size:0.75rem;opacity:0.7;margin-bottom:0.15rem">${who} · ${escapeHtml(t)}</div>
-          <div style="background:${bg};color:${color};padding:0.55rem 0.75rem;border-radius:10px;white-space:pre-wrap">${escapeHtml(m.text || '')}</div>
-        </div>`;
-      }).join('') : '<p class="text-muted">No messages yet.</p>';
+      hist.sort((a, b) => (Number(a.at) || 0) - (Number(b.at) || 0)); // oldest → newest
+      thread.innerHTML = hist.length ? hist.map(renderMsgBubble).join('') : '<p class="text-muted">No messages yet.</p>';
       thread.scrollTop = thread.scrollHeight;
     };
     overlay.querySelector('#msg-hist-send').onclick = async () => {
