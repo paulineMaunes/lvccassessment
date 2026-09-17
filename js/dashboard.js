@@ -3,6 +3,14 @@
  */
 
 const Dashboard = {
+  isLiveSession(s) {
+    if (!s || !s.id || String(s.id).startsWith('test_') || s.isMock) return false;
+    const st = String(s.status || '').toLowerCase().trim();
+    if (s.allowContinue || s.reopenedPrevious || s.instructorAdmitted) return true;
+    if (st === 'active') return true;
+    return false;
+  },
+
   unsubscribers: [],
   currentExamId: null,
   currentExam: null,
@@ -217,6 +225,7 @@ const Dashboard = {
           ${!isProctor ? `<button class="btn btn-primary" id="btn-extend-all">⏱ Extend all</button>` : ''}
           ${!isProctor ? `<button class="btn btn-danger" id="btn-end-all">End all assessments</button>` : ''}
           ${!isProctor ? `<button type="button" class="btn btn-primary" id="live-blast-msg" title="Message all active students">Blast message</button>` : ''}
+          ${!isProctor ? `<button type="button" class="btn btn-ghost" id="live-reopen-others" title="Add more students to this reopened session">Reopen for other student</button>` : ''}
         </div>
       </div>
       <div id="integrity-modal-root"></div>
@@ -268,18 +277,22 @@ const Dashboard = {
         const text = String(msg).trim();
         if (!text) { await UI.alert('Please type a message.', 'Empty'); return; }
         try {
-          const active = (this.sessionsCache || []).filter(s => s.status === 'active' && !String(s.id).startsWith('test_'));
-          if (!active.length) { await UI.alert('No active students.', 'Blast message'); return; }
-          const entry = { id: 'm_' + Date.now(), from: 'instructor', text, at: Date.now(), readByInstructor: true, blast: true };
-          await Promise.all(active.map(s => window.db.collection('sessions').doc(s.id).update({
+          const active = (this.sessionsCache || []).filter(s => this.isLiveSession(s));
+          if (!active.length) { await UI.alert('No active students on live dashboard.', 'Blast message'); return; }
+          const ping = Date.now();
+          const entry = { id: 'm_' + ping, from: 'instructor', text, at: ping, readByInstructor: true, blast: true };
+          // Parallel updates; instructorChatPing so students get popup immediately
+          const results = await Promise.all(active.map(s => window.db.collection('sessions').doc(s.id).update({
             lastInstructorMessage: text,
             instructorReply: text,
             lastInstructorMessageAt: firebase.firestore.FieldValue.serverTimestamp(),
             instructorReplyAt: firebase.firestore.FieldValue.serverTimestamp(),
-            chatPing: Date.now(),
-            chatHistory: firebase.firestore.FieldValue.arrayUnion(entry)
-          }).catch(() => {})));
-          await UI.alert('Sent to ' + active.length + ' student(s).', 'Blast message');
+            chatPing: ping,
+            instructorChatPing: ping,
+            chatHistory: firebase.firestore.FieldValue.arrayUnion({ ...entry })
+          }).then(() => true).catch((e) => { console.warn('blast', s.id, e); return false; })));
+          const n = results.filter(Boolean).length;
+          await UI.alert('Blast sent to ' + n + ' of ' + active.length + ' student(s).', 'Blast message');
         } catch (e) {
           await UI.alert(e.message || String(e), 'Blast failed');
         }
@@ -287,6 +300,12 @@ const Dashboard = {
     }
 
     if (endAllBtn) endAllBtn.onclick = () => this.endAllAssessments(examId);
+
+    const reopenOthersBtn = document.getElementById('live-reopen-others');
+    if (reopenOthersBtn) {
+      reopenOthersBtn.onclick = () => this.reopenForOtherStudents(examId);
+    }
+
 
     
     const deviceSel = document.getElementById('live-device-filter');
@@ -410,7 +429,7 @@ const Dashboard = {
         applySessions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       } catch (e) { console.warn('sessions poll', e); }
     };
-    this._livePollIv = setInterval(pollOnce, 5000);
+    this._livePollIv = setInterval(pollOnce, 2000);
     // Live screen thumbs collection (optional)
     try {
       const unsubLS = window.db.collection('liveScreens').onSnapshot(snap => {
@@ -803,7 +822,7 @@ const Dashboard = {
       <div class="modal-overlay ui-modal-overlay" id="detail-modal">
         <div class="modal ui-modal modal-wide">
           <h2>${escapeHtml(session.studentName || session.studentEmail)}</h2>
-          <p class="text-muted">Status: ${escapeHtml(session.status)}</p>
+          <p class="text-muted">Status: ${escapeHtml(session.allowContinue||session.reopenedPrevious?'continuing':(session.status||''))}</p>
           ${body}
           <div class="mt-1 text-muted" style="font-size:0.85rem">
             ${ranges.length ? ranges.map(r => `Paste lines ${r.startLine}–${r.endLine}`).join(' · ') : 'No paste ranges'}
@@ -898,63 +917,116 @@ const Dashboard = {
     }
   },
 
+
+  async reopenForOtherStudents(examId) {
+    try {
+      if (!examId) examId = this._liveExamId || this.currentExamId;
+      if (!examId) return;
+      // Reuse App.reopenPreviousSession student picker flow if available
+      if (window.App && typeof App.reopenPreviousSession === 'function') {
+        await App.reopenPreviousSession(examId);
+        // refresh live
+        try {
+          const snap = await window.db.collection('sessions').where('examId', '==', examId).get();
+          const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          this.sessionsCache = list;
+          this._renderSessions(list, this.currentExam);
+        } catch (_) {}
+        return;
+      }
+      await UI.alert('Reopen picker unavailable. Use Reopen Previous from My Assessments.', 'Reopen');
+    } catch (e) {
+      console.error(e);
+      await UI.alert(e.message || String(e), 'Error');
+    }
+  },
+
   async allowContinueSession(sessionId) {
-    const ok = await UI.confirm('Allow this student to continue with their saved answers?', 'Continue exam');
+    const ok = await UI.confirm('Allow this student to continue? You will choose an email template that controls how answers resume.', 'Continue exam');
     if (!ok) return;
-    await window.db.collection('sessions').doc(sessionId).update({
-      status: 'active',
-      lockedUntilAdmit: false,
-      instructorAdmitted: true,
-      awaitingAdmit: false,
-      allowContinue: true,
-      submitReason: null,
-      monitoringStopped: false,
-      continueAt: firebase.firestore.FieldValue.serverTimestamp()
-    });
-    const tplC = (window.App && App.pickEmailTemplate) ? await App.pickEmailTemplate() : null;
+    const tplC = (window.App && App.pickEmailTemplate) ? await App.pickEmailTemplate() : 'continue_progress';
+    if (tplC === null) return; // skipped
+    const beh = (window.App && App.retakeBehaviorFromTemplate)
+      ? App.retakeBehaviorFromTemplate(tplC)
+      : { retakeMode: 'continue_progress', carryAnswers: true, lockPreviousAnswers: false, showOnlyUnanswered: true, freshSession: false };
+
     try {
       const ssnap = await window.db.collection('sessions').doc(sessionId).get();
       const sd = ssnap.exists ? ssnap.data() : {};
-      const ex = await window.db.collection('exams').doc(sd.examId || this._liveExamId).get();
-      const ed = ex.exists ? ex.data() : {};
-      if (tplC && sd.studentEmail && App.queueStudentEmail) {
-        await App.queueStudentEmail({
-          to: sd.studentEmail,
-          templateId: tplC === 'quota_retake' ? 'continue_progress' : tplC,
-          examTitle: ed.title || '',
-          code: ed.assessmentCode || '',
-          studentName: sd.studentName || sd.studentEmail
+      const examId = sd.examId || this._liveExamId;
+      const email = String(sd.studentEmail || '').toLowerCase();
+
+      await window.db.collection('sessions').doc(sessionId).update({
+        status: beh.freshSession ? 'superseded' : 'active',
+        lockedUntilAdmit: false,
+        instructorAdmitted: true,
+        awaitingAdmit: false,
+        allowContinue: !beh.freshSession,
+        submitReason: beh.freshSession ? 'superseded' : null,
+        monitoringStopped: false,
+        retakeMode: beh.retakeMode,
+        showOnlyUnanswered: !!beh.showOnlyUnanswered,
+        lockPreviousAnswers: !!beh.lockPreviousAnswers,
+        continueAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+
+      if (email && examId) {
+        await window.db.collection('examRetakes').doc(examId + '_' + email.replace(/[^a-z0-9]/gi, '_')).set({
+          examId,
+          email,
+          allowed: true,
+          previousSessionId: sessionId,
+          templateId: tplC,
+          retakeMode: beh.retakeMode,
+          lockPreviousAnswers: !!beh.lockPreviousAnswers,
+          carryAnswers: !!beh.carryAnswers,
+          showOnlyUnanswered: !!beh.showOnlyUnanswered,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
         });
       }
-    } catch (e) { console.warn(e); }
-    await UI.alert('Student can rejoin with the same assessment code and continue saved progress.', 'Continue enabled');
+
+      const ex = await window.db.collection('exams').doc(examId).get();
+      const ed = ex.exists ? ex.data() : {};
+      if (tplC && email && App.queueStudentEmail) {
+        let unattempted = null;
+        try {
+          if (window.App && App.computeAttemptStats) {
+            const st = App.computeAttemptStats(sd, ed);
+            unattempted = st && st.unattempted;
+          }
+        } catch (_) {}
+        await App.queueStudentEmail({
+          to: email,
+          templateId: tplC,
+          examTitle: ed.title || '',
+          code: ed.assessmentCode || '',
+          studentName: sd.studentName || sd.studentEmail,
+          unattempted
+        });
+      }
+      await UI.alert(
+        beh.freshSession
+          ? 'Fresh retake enabled. Student joins with the assessment code and answers all questions again.'
+          : (beh.lockPreviousAnswers
+            ? 'Continue enabled. Student will only see unanswered questions; previous answers stay locked.'
+            : 'Continue enabled. Student resumes saved progress (skips answered items) and can review before submit.'),
+        'Continue enabled'
+      );
+    } catch (e) {
+      console.error(e);
+      await UI.alert(e.message || String(e), 'Error');
+    }
   },
 
   async allowRetakeSession(sessionId, examId) {
-    const mode = await new Promise((resolve) => {
-      const root = document.getElementById('ui-modal-root') || document.body;
-      const w = document.createElement('div');
-      w.className = 'modal-overlay ui-modal-overlay';
-      w.style.zIndex = '50000';
-      w.innerHTML = `<div class="modal ui-modal">
-        <h2>Allow retake</h2>
-        <p class="ui-modal-body">Choose how previous answers are handled:</p>
-        <div class="modal-actions" style="flex-direction:column;gap:0.5rem;align-items:stretch">
-          <button type="button" class="btn btn-primary" id="rt-fresh">Fresh attempt (clear answers)</button>
-          <button type="button" class="btn btn-ghost" id="rt-edit">Continue with previous answers (student can edit)</button>
-          <button type="button" class="btn btn-ghost" id="rt-lock">Continue with previous answers (locked — view only, then new work only if unlocked)</button>
-          <button type="button" class="btn btn-ghost" id="rt-cancel">Cancel</button>
-        </div>
-      </div>`;
-      root.appendChild(w);
-      w.querySelector('#rt-fresh').onclick = () => { w.remove(); resolve('fresh'); };
-      w.querySelector('#rt-edit').onclick = () => { w.remove(); resolve('edit'); };
-      w.querySelector('#rt-lock').onclick = () => { w.remove(); resolve('lock'); };
-      w.querySelector('#rt-cancel').onclick = () => { w.remove(); resolve(null); };
-    });
-    if (!mode) return;
-    const old = await window.db.collection('sessions').doc(sessionId).get();
-    const data = old.exists ? old.data() : {};
+    const tpl = (window.App && App.pickEmailTemplate) ? await App.pickEmailTemplate() : 'instructor_retake';
+    if (tpl === null) return;
+    const beh = (window.App && App.retakeBehaviorFromTemplate)
+      ? App.retakeBehaviorFromTemplate(tpl)
+      : { retakeMode: 'fresh', carryAnswers: false, lockPreviousAnswers: false, showOnlyUnanswered: false, freshSession: true };
+
+    const snap = await window.db.collection('sessions').doc(sessionId).get();
+    const data = snap.exists ? snap.data() : {};
     await window.db.collection('sessions').doc(sessionId).update({
       status: 'superseded',
       retakeAllowed: true,
@@ -967,9 +1039,11 @@ const Dashboard = {
         email,
         allowed: true,
         previousSessionId: sessionId,
-        retakeMode: mode, // fresh | edit | lock
-        lockPreviousAnswers: mode === 'lock',
-        carryAnswers: mode === 'edit' || mode === 'lock',
+        templateId: tpl,
+        retakeMode: beh.retakeMode,
+        lockPreviousAnswers: !!beh.lockPreviousAnswers,
+        carryAnswers: !!beh.carryAnswers,
+        showOnlyUnanswered: !!beh.showOnlyUnanswered,
         createdAt: firebase.firestore.FieldValue.serverTimestamp()
       });
     }
@@ -981,23 +1055,31 @@ const Dashboard = {
         code = ex.data().assessmentCode || '';
       }
     } catch (_) {}
-    const tpl = await App.pickEmailTemplate();
     if (tpl && email) {
       try {
+        let unattempted = null;
+        try {
+          if (window.App && App.computeAttemptStats) {
+            const ed = (await window.db.collection('exams').doc(examId).get()).data() || {};
+            const st = App.computeAttemptStats(data, ed);
+            unattempted = st && st.unattempted;
+          }
+        } catch (_) {}
         await App.queueStudentEmail({
           to: email,
           templateId: tpl,
           examTitle,
           code,
-          studentName: data.studentName || email
+          studentName: data.studentName || email,
+          unattempted
         });
-        await UI.alert('Retake allowed. Email queued to ' + email + ' (requires Trigger Email extension + SMTP).', 'Retake enabled');
+        await UI.alert('Retake/continue allowed. Email queued to ' + email + '.', 'Enabled');
       } catch (e) {
         console.error(e);
-        await UI.alert('Retake allowed, but email queue failed: ' + (e.message || e) + '. Tell the student the assessment code in class.', 'Retake enabled');
+        await UI.alert('Allowed, but email failed: ' + (e.message || e) + '. Share the assessment code with the student.', 'Enabled');
       }
     } else {
-      await UI.alert('Retake allowed. Student joins again with the assessment code for a fresh attempt.', 'Retake enabled');
+      await UI.alert('Retake/continue allowed. Student uses the assessment code to join.', 'Enabled');
     }
   },
 
@@ -1398,15 +1480,19 @@ const Dashboard = {
         readByInstructor: true
       };
       // Unique chatPing so student listener always sees a new key
+      // Fast path: critical fields first so student popup is near-instant
       await window.db.collection('sessions').doc(sessionId).update({
         lastInstructorMessage: text,
         instructorReply: text,
         lastInstructorMessageAt: firebase.firestore.FieldValue.serverTimestamp(),
         instructorReplyAt: firebase.firestore.FieldValue.serverTimestamp(),
         chatPing: ping,
-        instructorChatPing: ping,
-        chatHistory: firebase.firestore.FieldValue.arrayUnion(entry)
+        instructorChatPing: ping
       });
+      // History append (best-effort, does not block delivery)
+      window.db.collection('sessions').doc(sessionId).update({
+        chatHistory: firebase.firestore.FieldValue.arrayUnion(entry)
+      }).catch(() => {});
       // Also push a notifications doc so instructor activity is visible in history panels
       try {
         await window.db.collection('notifications').add({
@@ -1639,7 +1725,7 @@ const Dashboard = {
     const grid = document.getElementById('live-sessions-grid');
     if (!grid) return;
     const all = sessions || [];
-    const activeCount = all.filter(s => s.status === 'active' && !String(s.id).startsWith('test_')).length;
+    const activeCount = all.filter(s => this.isLiveSession(s)).length;
     const submittedCount = all.filter(s => s.status === 'submitted' || s.status === 'ended').length;
     const countEl = document.getElementById('live-student-count');
     if (countEl) countEl.textContent = activeCount + ' taking now';
@@ -1651,6 +1737,8 @@ const Dashboard = {
       if (!s || !s.id) return false;
       if (String(s.id).startsWith('test_')) return false;
       if (s.isMock) return false;
+      // Reopened / allowContinue sessions stay on live grid even if status lag is "submitted"
+      if (this.isLiveSession && this.isLiveSession(s)) return true;
       const st = String(s.status || 'active').toLowerCase().trim();
       return st !== 'submitted' && st !== 'ended' && st !== 'graded';
     });
@@ -1777,7 +1865,7 @@ const Dashboard = {
               <div class="text-muted" style="font-size:0.75rem">Violations: ${violations}</div>
             </div>
             <div class="text-right">
-              <span class="status ${s.status !== 'active' ? 'idle' : ''}">${s.status}</span>
+              <span class="status ${(!(s.allowContinue||s.reopenedPrevious||s.status==='active')) ? 'idle' : ''}">${this.sessionStatusLabel ? this.sessionStatusLabel(s) : s.status}</span>
               ${timer ? `<div class="timer-chip">⏱ ${timer}</div>` : ''}
               <div class="text-muted" style="font-size:0.7rem">${last}</div>
             </div>

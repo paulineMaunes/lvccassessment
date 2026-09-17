@@ -755,3 +755,10 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Reopen (new or previous, even 1 student): always show publish schedule (start/end/time limit/randomize) and set assessment Live
 - Reopen Previous student picker: search box + filters ≥5 unattempted and ≥5 wrong
 - Sessions detail: Export all results (ZIP of per-student PDFs) and Export all integrity (ZIP of per-student PDFs)
+
+## v1.5.90
+- Live dashboard treats reopened/allowContinue sessions as active (status continuing, screens + integrity resume)
+- Reopen batch clears submitted flags; student re-entry restarts Monitor
+- Live: "Reopen for other student" adds more students to current reopened session
+- Blast message includes continuing sessions + instructorChatPing
+- Faster chat: critical message fields write first; history append async; live poll 2s

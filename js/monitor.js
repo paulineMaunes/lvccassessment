@@ -665,7 +665,15 @@ const Monitor = {
         // Adaptive snapshot cadence: focused student 5s, all screens 15s
         try {
           const focused = d.focusedSessionId || null;
-          const want = (focused && focused === this.sessionId) ? 5000 : 15000;
+          // When live screens enabled: 3s refresh; focused student also 3s; otherwise 15s (quota)
+          let want = 15000;
+          if (typeof d.liveThumbIntervalMs === 'number' && d.liveThumbIntervalMs >= 2000) {
+            want = d.liveThumbIntervalMs;
+          } else if (d.liveFeedEnabled === true || d.liveScreensOn === true) {
+            want = 3000;
+          } else if (focused && focused === this.sessionId) {
+            want = 5000;
+          }
           if (want !== this._thumbIntervalMs) {
             this._thumbIntervalMs = want;
             if (this.timer) clearInterval(this.timer);
@@ -684,6 +692,11 @@ const Monitor = {
     try {
       this._sessionEndUnsub = window.db.collection('sessions').doc(this.sessionId).onSnapshot(snap => {
         const d = snap.data() || {};
+        // If instructor reopened (allowContinue / active again), keep monitoring
+        if (d.allowContinue || d.reopenedPrevious || d.status === 'active') {
+          if (this.submitting) this.submitting = false;
+          return;
+        }
         if (d.status === 'submitted' || d.monitoringStopped || d.instructorEnded) {
           try { this.stop(); } catch (_) {}
           if (this._sessionEndUnsub) {

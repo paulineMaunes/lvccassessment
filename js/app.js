@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.89
+ * v1.5.90
  */
 
 const App = {
@@ -622,7 +622,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.89</div>
+          <div class="app-version">Build v1.5.90</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -764,7 +764,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.89</div>
+              <div class="app-version">v1.5.90</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -4392,11 +4392,16 @@ const App = {
           allowContinue: true,
           instructorAdmitted: true,
           lockedUntilAdmit: false,
+          awaitingAdmit: false,
           monitoringStopped: false,
           teacherEnded: false,
+          instructorEnded: false,
+          submitReason: null,
+          submittedAt: null,
           reopenedPrevious: true,
           reopenedAt: firebase.firestore.FieldValue.serverTimestamp(),
-          endsAt: sched.endAt
+          endsAt: sched.endAt,
+          lastUpdate: firebase.firestore.FieldValue.serverTimestamp()
         });
       });
       const exam = examMeta || await Exam.getExam(examId);
@@ -7708,9 +7713,11 @@ const App = {
           lastStudentMessageAt: firebase.firestore.FieldValue.serverTimestamp(),
           chatPing: ping,
           studentChatAt: ping,
-          msgReadByInstructor: false,
-          chatHistory: firebase.firestore.FieldValue.arrayUnion(entry)
+          msgReadByInstructor: false
         });
+        window.db.collection('sessions').doc(sessionId).update({
+          chatHistory: firebase.firestore.FieldValue.arrayUnion(entry)
+        }).catch(() => {});
         await UI.alert('Message sent to instructor.', 'Sent');
       } catch (e) {
         console.error(e);
@@ -7886,13 +7893,32 @@ const App = {
         await UI.alert('This assessment was ended by your instructor. You cannot re-enter.', 'Assessment closed');
         return this.showStudentHome();
       }
-      if (session.allowContinue || session.instructorAdmitted) {
+      if (session.allowContinue || session.instructorAdmitted || session.reopenedPrevious) {
         await window.db.collection('sessions').doc(session.id).update({
           status: 'active',
           monitoringStopped: false,
-          reenteredAt: firebase.firestore.FieldValue.serverTimestamp()
+          instructorEnded: false,
+          teacherEnded: false,
+          submitReason: null,
+          allowContinue: true,
+          reenteredAt: firebase.firestore.FieldValue.serverTimestamp(),
+          lastUpdate: firebase.firestore.FieldValue.serverTimestamp()
         }).catch(() => {});
         session.status = 'active';
+        session.monitoringStopped = false;
+        session.allowContinue = true;
+        // Restart integrity + screen monitoring for reopened attempt
+        try {
+          if (window.Monitor) {
+            Monitor.submitting = false;
+            Monitor.monitoringStopped = false;
+            if (typeof Monitor.start === 'function') {
+              Monitor.start(session.id, session.examId || session.exam?.id);
+            } else if (typeof Monitor.resume === 'function') {
+              Monitor.resume();
+            }
+          }
+        } catch (_) {}
       } else {
         const go = await UI.confirm(
           'You already submitted or left this assessment. Request to continue with your saved progress?',
