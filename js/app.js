@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.84
+ * v1.5.86
  */
 
 const App = {
@@ -535,7 +535,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.84</div>
+          <div class="app-version">Build v1.5.86</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -677,7 +677,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.84</div>
+              <div class="app-version">v1.5.86</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -7187,6 +7187,20 @@ const App = {
   },
 
 
+
+  restoreLocalAnswers(session) {
+    try {
+      if (!session || !session.id) return session;
+      const local = sessionStorage.getItem('lvcc_answers_' + session.id);
+      if (!local) return session;
+      const parsed = JSON.parse(local);
+      if (parsed && typeof parsed === 'object') {
+        session.answers = { ...(session.answers || {}), ...parsed };
+      }
+    } catch (_) {}
+    return session;
+  },
+
   _watchTeacherEnd(sessionId) { return this._watchInstructorEnd(sessionId); },
 
   _watchInstructorEnd(sessionId) {
@@ -7196,6 +7210,32 @@ const App = {
     this._lastInstructorChat = null;
     this._sessionWatchUnsub = Exam.listenToSession(sessionId, async (s) => {
       if (!s) return;
+      // Instructor force-refresh (keep answers — same as student F5)
+      try {
+        const fr = s.forceClientRefresh;
+        if (fr != null && fr !== '') {
+          if (this._lastForceRefreshToken == null) {
+            // First snapshot after open/reload — accept current token, do not reload
+            this._lastForceRefreshToken = fr;
+          } else if (String(fr) !== String(this._lastForceRefreshToken)) {
+            this._lastForceRefreshToken = fr;
+            try {
+              const answers = window._takeAnswers || {};
+              if (sessionId) {
+                try { sessionStorage.setItem('lvcc_answers_' + sessionId, JSON.stringify(answers)); } catch (_) {}
+                try { await Exam.updateSessionAnswers(sessionId, answers); } catch (_) {}
+              }
+            } catch (_) {}
+            try {
+              if (window.Monitor) Monitor._uiBusy = true;
+              await UI.alert('Your instructor refreshed this screen. Your answers were saved.', 'Screen refresh');
+            } catch (_) {}
+            try { sessionStorage.setItem('lvcc_force_refresh_done_' + sessionId, String(fr)); } catch (_) {}
+            location.reload();
+            return;
+          }
+        }
+      } catch (_) {}
       // Instructor ended
       if (s.status === 'submitted' && (s.submitReason === 'teacher-ended' || s.submitReason === 'ended')) {
         if (this._endedHandled) return;
@@ -7209,15 +7249,21 @@ const App = {
         this._showEndedOverlay();
         return;
       }
-      // Single path for instructor messages — key by chatPing so progression never re-shows
+      // Instructor messages — prefer instructorChatPing so student own chatPing does not collide
       const msg = s.lastInstructorMessage || s.instructorReply;
-      const ping = s.chatPing || s.instructorReplyAt?.toMillis?.() || s.instructorReplyAt || null;
-      const key = ping != null ? String(ping) : (msg || '');
+      const ping = s.instructorChatPing || s.instructorReplyAt?.toMillis?.() || s.instructorReplyAt ||
+        s.lastInstructorMessageAt?.toMillis?.() || s.lastInstructorMessageAt || null;
+      const key = ping != null ? ('i:' + String(ping)) : (msg ? ('m:' + String(msg).slice(0, 80)) : '');
       if (msg && key && key !== this._lastInstructorChatKey) {
         this._lastInstructorChatKey = key;
         this._lastInstructorChat = msg;
         this._lastInstructorReply = s.instructorReply || msg;
-        await UI.alert(String(msg), 'Message from Instructor');
+        try {
+          if (window.Monitor) Monitor._uiBusy = true;
+          await UI.alert(String(msg), 'Message from Instructor');
+        } finally {
+          setTimeout(() => { if (window.Monitor) Monitor._uiBusy = false; }, 500);
+        }
       }
     });
   },
@@ -7293,11 +7339,21 @@ const App = {
           await UI.alert('Please type a message.', 'Empty');
           return;
         }
+        const ping = Date.now();
+        const entry = {
+          id: 'm_' + ping,
+          from: 'student',
+          text,
+          at: ping,
+          readByInstructor: false
+        };
         await window.db.collection('sessions').doc(sessionId).update({
           lastStudentMessage: text,
           lastStudentMessageAt: firebase.firestore.FieldValue.serverTimestamp(),
-          chatPing: Date.now(),
-          studentChatAt: Date.now()
+          chatPing: ping,
+          studentChatAt: ping,
+          msgReadByInstructor: false,
+          chatHistory: firebase.firestore.FieldValue.arrayUnion(entry)
         });
         await UI.alert('Message sent to instructor.', 'Sent');
       } catch (e) {
@@ -7681,7 +7737,8 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
     } catch (_) {}
 
     let pi = 0;
-    const answers = { ...(session.answers || {}) };
+    try { session = this.restoreLocalAnswers(session) || session; } catch (_) {}
+    let answers = { ...(session.answers || {}) };
     window._takeAnswers = answers;
     window._passageTab = 0;
     window._seenSectionIntro = null;

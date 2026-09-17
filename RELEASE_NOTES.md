@@ -721,3 +721,15 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Live dashboard: filter "Locked (need admit)" to show only locked students
 - Live dashboard: locked count chip + Mass unlock (batch admit all locked)
 - Locked badge on student cards; single Unlock still available
+
+## v1.5.85
+- Live messages stream: refresh on every session update (student messages now appear in right panel)
+- Student chat writes chatHistory + msgReadByInstructor so stream and unread dots work
+- Instructor reply uses unique instructorChatPing; student gets popup notification reliably
+- Live right panel stretched to full content height under the page title
+- Live screens refresh every 3 seconds when screens are on
+
+## v1.5.86
+- Live dashboard: Refresh button per student — forces their assessment screen to reload
+- Student progress preserved (answers flushed to sessionStorage + Firestore before reload, same as F5)
+- First snapshot after open does not re-trigger an old refresh signal

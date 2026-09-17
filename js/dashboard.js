@@ -1184,42 +1184,51 @@ const Dashboard = {
     const list = document.getElementById('live-msg-list');
     if (!list) return;
     const sessions = (this.sessionsCache || []).filter(s => {
-      if (s.status === 'ended' || s.status === 'submitted') {
-        const end = s.submittedAt || s.endedAt || s.updatedAt;
-        let t = 0;
-        try {
-          t = end && end.toMillis ? end.toMillis() : (typeof end === 'number' ? end : Date.parse(end) || 0);
-        } catch (_) {}
-        if (t && (Date.now() - t) > 24 * 60 * 60 * 1000) return false;
-      }
+      if (!s || !s.id || String(s.id).startsWith('test_')) return false;
       return true;
     });
-    const rows = sessions
-      .map(s => {
-        const hist = Array.isArray(s.chatHistory) ? s.chatHistory : [];
-        const studentMsgs = hist.filter(m => m && m.from === 'student');
-        const latest = studentMsgs.length
-          ? studentMsgs[studentMsgs.length - 1]
-          : (s.lastStudentMessage ? { text: s.lastStudentMessage, at: s.chatPing || 0, from: 'student' } : null);
-        if (!latest || !String(latest.text || '').trim()) return null;
-        const unread2 = studentMsgs.length && studentMsgs[studentMsgs.length - 1] && studentMsgs[studentMsgs.length - 1].readByInstructor === false;
-        const isUnread = (!s.msgReadByInstructor && !!(s.lastStudentMessage)) || unread2 ||
-          (s.chatPing && this._seenStudentMsgs && this._seenStudentMsgs[s.id] !== s.chatPing && s.status === 'active');
-        return { session: s, latest, at: latest.at || s.chatPing || 0, unread: !!isUnread };
-      })
-      .filter(Boolean)
-      .sort((a, b) => (b.at || 0) - (a.at || 0));
-
+    const rows = [];
+    sessions.forEach(s => {
+      const hist = Array.isArray(s.chatHistory) ? s.chatHistory : [];
+      // Prefer last student-facing activity for the stream row
+      let latestStudent = null;
+      for (let i = hist.length - 1; i >= 0; i--) {
+        if (hist[i] && hist[i].from === 'student' && String(hist[i].text || '').trim()) {
+          latestStudent = hist[i];
+          break;
+        }
+      }
+      if (!latestStudent && s.lastStudentMessage && String(s.lastStudentMessage).trim()) {
+        latestStudent = {
+          text: s.lastStudentMessage,
+          at: s.chatPing || (s.lastStudentMessageAt && s.lastStudentMessageAt.toMillis ? s.lastStudentMessageAt.toMillis() : 0) || 0,
+          from: 'student'
+        };
+      }
+      if (!latestStudent) return;
+      const unread = s.msgReadByInstructor === false ||
+        (this._seenStudentMsgs && s.chatPing && this._seenStudentMsgs[s.id] !== s.chatPing);
+      rows.push({
+        session: s,
+        latest: latestStudent,
+        at: Number(latestStudent.at) || Number(s.chatPing) || 0,
+        unread: !!unread
+      });
+    });
+    rows.sort((a, b) => (b.at || 0) - (a.at || 0));
     if (!rows.length) {
       list.innerHTML = '<p class="text-muted">No student messages yet.</p>';
       return;
     }
     list.innerHTML = rows.map(r => {
       const name = r.session.studentName || r.session.studentEmail || 'Student';
-      const preview = String(r.latest.text || '').slice(0, 80);
-      const time = r.at ? new Date(r.at).toLocaleTimeString() : '';
+      const preview = String(r.latest.text || '').slice(0, 120);
+      let time = '';
+      try {
+        if (r.at) time = new Date(r.at).toLocaleString();
+      } catch (_) {}
       return `<button type="button" class="live-msg-row ${r.unread ? 'unread' : ''}" data-msg-sid="${r.session.id}">
-        ${r.unread ? '<span class="msg-unread-dot" aria-label="Unread"></span>' : '<span class="msg-read-spacer"></span>'}
+        ${r.unread ? '<span class="live-msg-dot" title="Unread"></span>' : '<span class="live-msg-dot read"></span>'}
         <span class="live-msg-body">
           <strong>${escapeHtml(name)}</strong>
           <span class="live-msg-preview">${escapeHtml(preview)}</span>
@@ -1231,6 +1240,7 @@ const Dashboard = {
       btn.onclick = () => this.openStudentMessageHistory(btn.getAttribute('data-msg-sid'));
     });
   },
+
 
   async openStudentMessageHistory(sessionId) {
     const s = (this.sessionsCache || []).find(x => x.id === sessionId);
@@ -1324,27 +1334,70 @@ const Dashboard = {
       return;
     }
     try {
+      const ping = Date.now();
       const entry = {
-        id: 'm_' + Date.now(),
+        id: 'm_' + ping,
         from: 'instructor',
         text,
-        at: Date.now(),
+        at: ping,
         readByInstructor: true
       };
+      // Unique chatPing so student listener always sees a new key
       await window.db.collection('sessions').doc(sessionId).update({
         lastInstructorMessage: text,
         instructorReply: text,
         lastInstructorMessageAt: firebase.firestore.FieldValue.serverTimestamp(),
         instructorReplyAt: firebase.firestore.FieldValue.serverTimestamp(),
-        chatPing: Date.now(),
+        chatPing: ping,
+        instructorChatPing: ping,
         chatHistory: firebase.firestore.FieldValue.arrayUnion(entry)
       });
-      await UI.alert('Message sent to student.', 'Sent');
+      // Also push a notifications doc so instructor activity is visible in history panels
+      try {
+        await window.db.collection('notifications').add({
+          type: 'instructor-message',
+          examId: this.currentExamId || this._liveExamId || null,
+          sessionId,
+          message: text,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+          from: 'instructor'
+        });
+      } catch (_) {}
+      await UI.alert('Message sent to student. They will see a popup on their assessment screen.', 'Sent');
       try { this.refreshLiveMessageList && this.refreshLiveMessageList(); } catch(_){}
     } catch (e) {
       console.error(e);
       await UI.alert(e.message || String(e), 'Error');
     }
+  },
+
+
+  async forceRefreshStudent(sessionId) {
+    try {
+      if (!sessionId) return;
+      const ok = await UI.confirm(
+        'Refresh this student\'s assessment screen? Their answers will be kept (same as if they pressed F5).',
+        'Force refresh student'
+      );
+      if (!ok) return;
+      const token = Date.now();
+      await window.db.collection('sessions').doc(sessionId).update({
+        forceClientRefresh: token,
+        forceClientRefreshAt: firebase.firestore.FieldValue.serverTimestamp(),
+        lastInstructorMessage: 'Your instructor refreshed your assessment screen. Your answers were kept.',
+        instructorReply: 'Your instructor refreshed your assessment screen. Your answers were kept.',
+        instructorChatPing: token,
+        lastInstructorMessageAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      await UI.alert('Refresh signal sent. The student\'s screen will reload and keep their progress.', 'Refresh sent');
+    } catch (e) {
+      console.error(e);
+      await UI.alert(e.message || 'Could not send refresh', 'Error');
+    }
+  },
+
+  async massForceRefreshLockedOrAll(mode) {
+    // optional helper unused for now
   },
 
   async lockStudentSession(sessionId) {
@@ -1476,6 +1529,16 @@ const Dashboard = {
   setLiveScreensEnabled(on) {
     this.showLiveScreens = !!on;
     try {
+      if (this._liveExamId) {
+        window.db.collection('exams').doc(this._liveExamId).set({
+          liveFeedEnabled: !!on,
+          liveScreensOn: !!on,
+          liveThumbIntervalMs: on ? 3000 : 15000,
+          liveFeedUpdatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge: true }).catch(() => {});
+      }
+    } catch (_) {}
+    try {
       if (this.currentExamId || this._liveExamId) {
         const id = this.currentExamId || this._liveExamId;
         window.db.collection('exams').doc(id).update({
@@ -1488,6 +1551,7 @@ const Dashboard = {
   },
 
   _renderSessions(sessions, exam) {
+    try { this.refreshLiveMessageList(); } catch (_) {}
     // Refresh focus dropdown
     const sel = document.getElementById('focus-student-screen');
     if (sel) {
@@ -1680,6 +1744,7 @@ const Dashboard = {
           <div class="action-btns" style="padding:0.5rem">
             <button class="btn btn-sm btn-ghost" onclick="Dashboard.openStudentDetail('${s.id}')">Details</button>
             <button class="btn btn-sm btn-ghost" onclick="Dashboard.messageStudent('${s.id}')">Message student</button>
+            <button class="btn btn-sm btn-ghost" onclick="Dashboard.forceRefreshStudent('${s.id}')" title="Reload student screen — answers kept">Refresh</button>
             <button class="btn btn-sm btn-muted" onclick="Dashboard.lockStudentSession('${s.id}')">Lock</button>
             <button class="btn btn-sm btn-ghost" onclick="Dashboard.unlockStudentSession('${s.id}')">Unlock</button>
             <button class="btn btn-sm btn-primary" onclick="Dashboard.promptExtend('${s.id}')">⏱ Extend</button>
@@ -1701,6 +1766,7 @@ const Dashboard = {
         <div class="action-btns" style="padding:0.5rem">
           <button class="btn btn-sm btn-ghost" onclick="Dashboard.openStudentDetail('${s.id}')">Details</button>
           <button class="btn btn-sm btn-ghost" onclick="Dashboard.messageStudent('${s.id}')">Message student</button>
+            <button class="btn btn-sm btn-ghost" onclick="Dashboard.forceRefreshStudent('${s.id}')" title="Reload student screen — answers kept">Refresh</button>
             <button class="btn btn-sm btn-muted" onclick="Dashboard.lockStudentSession('${s.id}')">Lock</button>
             <button class="btn btn-sm btn-ghost" onclick="Dashboard.unlockStudentSession('${s.id}')">Unlock</button>
           <button class="btn btn-sm btn-primary" onclick="App.gradeSession('${s.id}', '${s.examId || ''}')">Grade</button>
