@@ -772,3 +772,6 @@ If features seem missing, replace **all** app files from the zip (not only one J
 ## v1.5.92
 - Timer: time limit (minutes) is per-student from start/continue → "Time's up!" auto-submit; assessment end datetime is window close → "Assessment window closed". No longer shows instructor "Assessment Ended" for normal time limit.
 - Courses: add/edit/delete course & subject; enroll via checkbox grid (filter + optional extra emails)
+
+## v1.5.93
+- Reopen Previous: "Allow continue & Skip Email" — enables selected students without sending email (still runs schedule + live reopen)

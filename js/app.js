@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.92
+ * v1.5.93
  */
 
 const App = {
@@ -634,7 +634,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.92</div>
+          <div class="app-version">Build v1.5.93</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -780,7 +780,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.92</div>
+              <div class="app-version">v1.5.93</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -4280,6 +4280,7 @@ const App = {
           <div class="modal-actions" style="flex-wrap:wrap;gap:0.5rem">
             <button type="button" class="btn btn-ghost" id="rp-cancel">Cancel</button>
             <button type="button" class="btn btn-ghost" id="rp-test-email">Test Email</button>
+            <button type="button" class="btn btn-ghost" id="rp-go-skip-email" title="Allow selected students to continue without sending email">Allow continue &amp; Skip Email</button>
             <button type="button" class="btn btn-primary" id="rp-go">Allow continue</button>
           </div>
         </div>`;
@@ -4370,9 +4371,20 @@ const App = {
             await UI.alert(err.message || String(err), 'Test Email failed');
           }
         };
-        w.querySelector('#rp-go').onclick = async () => {
+        const collectSelectedIds = async () => {
           const ids = [...w.querySelectorAll('.rp-sid:checked')].map(c => c.value);
-          if (!ids.length) { await UI.alert('Select at least one student.', 'Continue'); return; }
+          if (!ids.length) { await UI.alert('Select at least one student.', 'Continue'); return null; }
+          return ids;
+        };
+        w.querySelector('#rp-go-skip-email').onclick = async () => {
+          const ids = await collectSelectedIds();
+          if (!ids) return;
+          w.remove();
+          resolve(ids);
+        };
+        w.querySelector('#rp-go').onclick = async () => {
+          const ids = await collectSelectedIds();
+          if (!ids) return;
           const tpl = await this.pickEmailTemplate();
           if (!tpl) return; // cancelled template = cancel flow
           for (const id of ids) {
