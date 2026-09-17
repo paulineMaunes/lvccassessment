@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.78
+ * v1.5.79
  */
 
 const App = {
@@ -274,7 +274,50 @@ const App = {
     } catch (_) {}
   },
 
-  _scrollTfFocus(gi, mode) {
+  /**
+   * After adding a row/option in assessment config: scroll into view and focus first editable field.
+   * @param {string|Element} root - container (card / list)
+   * @param {string} itemSelector - selector for rows/items inside root
+   */
+  focusLastAddedBuilderItem(root, itemSelector) {
+    const run = () => {
+      try {
+        const rootEl = typeof root === 'string' ? document.querySelector(root) : root;
+        if (!rootEl) return;
+        const items = itemSelector
+          ? rootEl.querySelectorAll(itemSelector)
+          : rootEl.querySelectorAll('tr, .match-cfg-row, .pass-q-card-tab, .cat-item-row, .mc-opt-row, .fill-blank-row, .wb-q-card, .card.mt-1');
+        let last = items[items.length - 1];
+        if (!last) last = rootEl;
+        const main = document.querySelector('.main-content') || document.getElementById('app');
+        if (main && last) {
+          const mr = main.getBoundingClientRect();
+          const lr = last.getBoundingClientRect();
+          main.scrollTop += (lr.top - mr.top) - Math.min(mr.height * 0.35, 120);
+        } else if (last) {
+          last.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        const focusable = last.querySelector(
+          'input:not([type=checkbox]):not([type=radio]):not([type=color]):not([type=hidden]):not([type=file]), textarea, [contenteditable="true"]'
+        );
+        if (focusable) {
+          try { focusable.focus({ preventScroll: true }); } catch (_) { try { focusable.focus(); } catch (__) {} }
+          try {
+            if (typeof focusable.select === 'function' && focusable.type !== 'number') focusable.select();
+            else if (focusable.setSelectionRange && focusable.value != null)
+              focusable.setSelectionRange(focusable.value.length, focusable.value.length);
+          } catch (_) {}
+        }
+      } catch (_) {}
+    };
+    requestAnimationFrame(() => {
+      setTimeout(run, 60);
+      setTimeout(run, 200);
+      setTimeout(run, 400);
+    });
+  },
+
+    _scrollTfFocus(gi, mode) {
     try {
       const run = () => {
         const main = document.querySelector('.main-content') || document.getElementById('app');
@@ -433,7 +476,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.78</div>
+          <div class="app-version">Build v1.5.79</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -575,7 +618,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.78</div>
+              <div class="app-version">v1.5.79</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -990,7 +1033,54 @@ const App = {
 
 
 
-  /** Estimate JSON size in bytes */
+  /**
+   * Move large data:image payloads to Firebase Storage; leave https URLs in the exam doc.
+   * Firestore document size limit is always 1 MiB — Blaze does not change that.
+   */
+  async externalizeAssessmentImages(payload, examId) {
+    if (!window.firebase || typeof firebase.storage !== 'function') {
+      throw new Error('Firebase Storage SDK not loaded (firebase.storage)');
+    }
+    const clone = JSON.parse(JSON.stringify(payload));
+    const jobs = [];
+    const walk = (node, path) => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        node.forEach((v, i) => {
+          if (typeof v === 'string' && v.indexOf('data:image') === 0 && v.length > 2000) {
+            jobs.push({ path: path.concat([i]), dataUrl: v });
+          } else if (v && typeof v === 'object') walk(v, path.concat([i]));
+        });
+        return;
+      }
+      Object.keys(node).forEach(k => {
+        const v = node[k];
+        if (typeof v === 'string' && v.indexOf('data:image') === 0 && v.length > 2000) {
+          jobs.push({ path: path.concat([k]), dataUrl: v });
+        } else if (v && typeof v === 'object') walk(v, path.concat([k]));
+      });
+    };
+    walk(clone, []);
+    if (!jobs.length) return clone;
+    const id = examId || ('tmp_' + Date.now());
+    for (let i = 0; i < jobs.length; i++) {
+      const job = jobs[i];
+      const m = job.dataUrl.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/);
+      if (!m) continue;
+      const ref = firebase.storage().ref().child(
+        'assessments/' + id + '/img_' + Date.now() + '_' + i + '_' + Math.random().toString(36).slice(2, 7)
+      );
+      await ref.putString(m[2], 'base64', { contentType: m[1] });
+      const url = await ref.getDownloadURL();
+      let cur = clone;
+      for (let j = 0; j < job.path.length - 1; j++) cur = cur[job.path[j]];
+      cur[job.path[job.path.length - 1]] = url;
+    }
+    clone.imagesExternalized = true;
+    return clone;
+  },
+
+    /** Estimate JSON size in bytes */
   _payloadBytes(obj) {
     try { return new Blob([JSON.stringify(obj)]).size; } catch (_) {
       return JSON.stringify(obj).length;
@@ -1398,8 +1488,8 @@ const App = {
         console.warn('Storage externalize', storErr);
         throw new Error(
           'Assessment is large (' + Math.round(bytes / 1024) + ' KB). Could not upload images to Storage: ' +
-          (storErr.message || storErr) +
-          '. Enable Firebase Storage, publish rules for assessments/{examId}/**, and ensure storageBucket is set in firebase-config.'
+          (storErr && storErr.message ? storErr.message : String(storErr)) +
+          '. Check: (1) Firebase Storage enabled (2) your existing assessments/{examId}/** rules published (3) storageBucket in firebase-config.js matches the project.'
         );
       }
     }
@@ -1797,6 +1887,10 @@ const App = {
             q.pointsMode = q.pointsMode || 'each';
           }
           renderBuilder();
+          setTimeout(() => {
+            const card = document.querySelector(`[data-match-add-left="${gi}"]`)?.closest('.card, .q-in-section');
+            App.focusLastAddedBuilderItem(card, '.match-cfg-row[data-side="left"], [data-match-left]');
+          }, 80);
         };
       });
       box.querySelectorAll('[data-match-add-right]').forEach(el => {
@@ -1804,6 +1898,10 @@ const App = {
           const gi = Number(el.dataset.matchAddRight);
           const q = (window._builderQuestions || [])[gi];
           if (!q) return; q.right = q.right || []; q.right.push(''); renderBuilder();
+          setTimeout(() => {
+            const card = document.querySelector(`[data-match-add-right="${gi}"]`)?.closest('.card, .q-in-section');
+            App.focusLastAddedBuilderItem(card, '.match-cfg-row[data-side="right"], [data-match-right]');
+          }, 80);
         };
       });
       box.querySelectorAll('[data-match-del-left]').forEach(el => {
@@ -1904,6 +2002,10 @@ const App = {
           const qi = Number(el.dataset.addOpt);
           if (flat[qi]) flat[qi].options.push('');
           syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+          setTimeout(() => App.focusLastAddedBuilderItem(
+            document.querySelector(`[data-add-opt="${qi}"]`)?.closest('.card, .q-in-section'),
+            '[data-opt], input[data-option], .mc-opt-row input'
+          ), 80);
         };
       });
       box.querySelectorAll('[data-multi]').forEach(el => {
@@ -2216,6 +2318,7 @@ const App = {
           q.wordBank = q.wordBank || [];
           q.wordBank.push('');
           syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+          setTimeout(() => App.focusLastAddedBuilderItem(el.closest('.card, .q-in-section'), '.wb-q-card, [data-wb-sentence], textarea'), 80);
         };
       });
       box.querySelectorAll('[data-wb-insert-blank]').forEach(el => {
@@ -2571,12 +2674,8 @@ const App = {
           window._passFocusScroll = true;
           syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
           setTimeout(() => {
-            const root = document.querySelector(`.passage-builder-wrap [data-gidx="${gi}"]`) || document.querySelector(`[data-pass-add-q="${gi}"]`)?.closest('.passage-builder-wrap');
-            const list = root && root.querySelector('.pass-q-list-scroll, .pass-q-list');
-            if (list) {
-              const last = list.lastElementChild;
-              if (last) last.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            }
+            const root = document.querySelector(`[data-pass-add-q="${gi}"]`)?.closest('.passage-builder-wrap, .card') || document.querySelector(`.passage-builder-wrap`);
+            App.focusLastAddedBuilderItem(root && root.querySelector('.pass-q-list-scroll, .pass-q-list') || root, '.pass-q-card-tab, .card.mt-1');
           }, 150);
         };
       });
@@ -2644,6 +2743,10 @@ const App = {
           const q = qAt(gi); const kq = q?.questions?.[ki]; if (!kq) return;
           kq.options = kq.options || []; kq.options.push('');
           syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+          setTimeout(() => App.focusLastAddedBuilderItem(
+            document.querySelector(`[data-pass-add-opt="${gi}:${ki}"]`)?.closest('.pass-q-card-tab, .card') || el.closest('.pass-q-card-tab, .card'),
+            '[data-pass-opt]'
+          ), 80);
         };
       });
       box.querySelectorAll('[data-pass-del-opt]').forEach(el => {
@@ -2681,6 +2784,10 @@ const App = {
           q.categories = q.categories || [];
           q.categories.push({ id: 'c' + Date.now(), name: 'Category ' + (q.categories.length + 1) });
           syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
+          setTimeout(() => App.focusLastAddedBuilderItem(
+            document.querySelector(`[data-cat-add="${gi}"]`)?.closest('.categorize-builder-wrap, .card'),
+            '[data-cat-col-name], [data-cat-name]'
+          ), 80);
         };
       });
       box.querySelectorAll('[data-cat-add-item]').forEach(el => {
@@ -2699,11 +2806,10 @@ const App = {
           const firstCat = (q.categories && q.categories[0] && q.categories[0].id) || '';
           q.items.push({ id: 'i' + Date.now(), name: '', category: firstCat, image: '' });
           syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
-          setTimeout(() => {
-            const rows = document.querySelectorAll(`[data-cat-item-name^="${gi}:"]`);
-            const last = rows[rows.length - 1];
-            if (last) { last.scrollIntoView({ behavior: 'smooth', block: 'center' }); try { last.focus(); } catch(_){} }
-          }, 50);
+          setTimeout(() => App.focusLastAddedBuilderItem(
+            document.querySelector(`[data-cat-add-item="${gi}"]`)?.closest('.categorize-builder-wrap, .card'),
+            '[data-cat-item-name], .cat-item-row input'
+          ), 80);
         };
       });
       box.querySelectorAll('[data-cat-name]').forEach(el => {
@@ -2814,6 +2920,10 @@ const App = {
           syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
           setTimeout(() => App._scrollTfFocus(gi, 'col'), 120);
           setTimeout(() => App._scrollTfFocus(gi, 'col'), 320);
+          setTimeout(() => {
+            const root = document.querySelector(`[data-tf-add-col="${gi}"]`)?.closest('.table-builder-wrap, .card');
+            App.focusLastAddedBuilderItem(root, '[data-tf-header]');
+          }, 180);
         };
       });
       box.querySelectorAll('[data-tf-del-col]').forEach(el => {
@@ -2931,9 +3041,14 @@ const App = {
           window._tfFocusMode = 'row';
           window._tfFocusStamp = Date.now();
           syncFlat(); try { App.pushBuilderHistory(true); } catch(_){} renderBuilder();
-          // Wait for full DOM paint after re-render
           setTimeout(() => App._scrollTfFocus(gi, 'row'), 120);
           setTimeout(() => App._scrollTfFocus(gi, 'row'), 320);
+          setTimeout(() => {
+            const card = document.querySelector(`.table-builder-wrap[data-qi]`) || document.querySelector(`[data-tf-add-row="${gi}"]`)?.closest('.card');
+            // prefer the card that owns this gi
+            let root = document.querySelector(`[data-tf-add-row="${gi}"]`)?.closest('.table-builder-wrap, .card, .q-in-section');
+            App.focusLastAddedBuilderItem(root, 'table tbody tr');
+          }, 180);
         };
       });
       box.querySelectorAll('[data-tf-top-merged]').forEach(el => {

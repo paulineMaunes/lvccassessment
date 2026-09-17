@@ -683,3 +683,7 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Mobile students must use Google Chrome only (Safari / Samsung Internet / Firefox / Edge mobile blocked before exam start)
 - Desktop still allows Chrome or Edge
 - Keep existing Storage rules (image/*, 5MB, assessments/{examId}/**) — no change required
+
+## v1.5.79
+- Fix: externalizeAssessmentImages was missing (Could not save / is not a function) — method restored for Storage image offload
+- Assessment config: focusLastAddedBuilderItem — after adding row/option (table, match, MC, categorize, passage, wordbox) auto-scrolls and focuses first editable field
