@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.83
+ * v1.5.84
  */
 
 const App = {
@@ -535,7 +535,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.83</div>
+          <div class="app-version">Build v1.5.84</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -677,7 +677,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.83</div>
+              <div class="app-version">v1.5.84</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>

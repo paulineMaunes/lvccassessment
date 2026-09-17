@@ -716,3 +716,8 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Root cause: compress step replaced failed/large data:image with empty string
 - Fix: upload data:images to Firebase Storage first; compress never blanks images; strip phase removed
 - Soft-resize categorize uploads on pick (640px) for reliability
+
+## v1.5.84
+- Live dashboard: filter "Locked (need admit)" to show only locked students
+- Live dashboard: locked count chip + Mass unlock (batch admit all locked)
+- Locked badge on student cards; single Unlock still available

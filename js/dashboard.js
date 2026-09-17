@@ -231,8 +231,11 @@ const Dashboard = {
               <option value="mobile">Mobile only</option>
               <option value="desktop">Desktop only</option>
               <option value="bad">Bad connection</option>
+              <option value="locked">Locked (need admit)</option>
             </select>
             <button type="button" class="btn btn-sm btn-primary" id="live-submitted-btn">Submitted</button>
+            <span id="live-locked-count" class="chip" style="display:none;background:#fef3c7;color:#92400e;font-weight:600">0 locked</span>
+            <button type="button" class="btn btn-sm btn-primary" id="live-mass-unlock" title="Unlock all locked students for this assessment" style="display:none">Mass unlock</button>
           </div>
           <div id="live-sessions-grid" class="live-grid">
             <div class="empty-state">Waiting for students...</div>
@@ -284,6 +287,17 @@ const Dashboard = {
     }
 
     if (endAllBtn) endAllBtn.onclick = () => this.endAllAssessments(examId);
+
+    
+    const deviceSel = document.getElementById('live-device-filter');
+    if (deviceSel) {
+      deviceSel.onchange = () => {
+        this._deviceFilter = deviceSel.value || 'all';
+        if (this.sessionsCache) this._renderSessions(this.sessionsCache, this.currentExam);
+      };
+    }
+    const massUnlockBtn = document.getElementById('live-mass-unlock');
+    if (massUnlockBtn) massUnlockBtn.onclick = () => this.massUnlockLockedSessions();
 
     document.getElementById('session-screen-filter').oninput = (e) => {
       this._sessionScreenFilter = e.target.value;
@@ -1359,18 +1373,91 @@ const Dashboard = {
     }
   },
 
-  async unlockStudentSession(sessionId) {
+  async unlockStudentSession(sessionId, { silent } = {}) {
     try {
       if (!sessionId) return;
       await window.db.collection('sessions').doc(sessionId).update({
         lockedUntilAdmit: false,
+        awaitingAdmit: false,
         instructorAdmitted: true,
-        admittedAt: firebase.firestore.FieldValue.serverTimestamp()
+        admittedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        lockMessage: firebase.firestore.FieldValue.delete(),
+        lastInstructorMessage: 'You may continue your assessment.'
       });
-      await UI.alert('Student can continue the assessment.', 'Unlocked');
+      if (!silent) await UI.alert('Student can continue the assessment.', 'Unlocked');
     } catch (e) {
       console.error(e);
-      await UI.alert(e.message || 'Could not unlock', 'Error');
+      if (!silent) await UI.alert(e.message || 'Could not unlock', 'Error');
+      throw e;
+    }
+  },
+
+  async massUnlockLockedSessions() {
+    try {
+      const all = this.sessionsCache || [];
+      const locked = all.filter(s => {
+        if (!s || !s.id || String(s.id).startsWith('test_') || s.isMock) return false;
+        const st = String(s.status || 'active').toLowerCase();
+        if (st === 'submitted' || st === 'ended' || st === 'graded') return false;
+        return !!(s.lockedUntilAdmit || s.awaitingAdmit) && !s.instructorAdmitted;
+      });
+      if (!locked.length) {
+        await UI.alert('No locked students right now.', 'Mass unlock');
+        return;
+      }
+      const ok = await UI.confirm(
+        'Unlock ' + locked.length + ' student(s) so they can continue the assessment?',
+        'Mass unlock'
+      );
+      if (!ok) return;
+      if (window.UI && UI.showLoading) UI.showLoading('Unlocking ' + locked.length + '…');
+      let done = 0, failed = 0;
+      // Firestore batches max 500
+      const chunk = 400;
+      for (let i = 0; i < locked.length; i += chunk) {
+        const batch = window.db.batch();
+        const slice = locked.slice(i, i + chunk);
+        slice.forEach(s => {
+          batch.update(window.db.collection('sessions').doc(s.id), {
+            lockedUntilAdmit: false,
+            awaitingAdmit: false,
+            instructorAdmitted: true,
+            admittedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            lastInstructorMessage: 'You may continue your assessment.'
+          });
+        });
+        try {
+          await batch.commit();
+          done += slice.length;
+        } catch (e) {
+          console.error(e);
+          // fallback one-by-one
+          for (const s of slice) {
+            try {
+              await this.unlockStudentSession(s.id, { silent: true });
+              done++;
+            } catch (_) { failed++; }
+          }
+        }
+      }
+      if (window.UI && UI.hideLoading) UI.hideLoading();
+      await UI.alert(
+        'Unlocked ' + done + ' student(s)' + (failed ? ('. Failed: ' + failed) : '.'),
+        'Mass unlock'
+      );
+      // clear locked filter if empty
+      try {
+        if (this._deviceFilter === 'locked') {
+          const sel = document.getElementById('live-device-filter');
+          if (sel) sel.value = 'all';
+          this._deviceFilter = 'all';
+        }
+      } catch (_) {}
+      if (this.sessionsCache) this._renderSessions(this.sessionsCache, this.currentExam);
+    } catch (e) {
+      if (window.UI && UI.hideLoading) UI.hideLoading();
+      console.error(e);
+      await UI.alert(e.message || 'Mass unlock failed', 'Error');
     }
   },
 
@@ -1462,7 +1549,33 @@ const Dashboard = {
         const lag = s.lastUpdate?.toMillis ? (Date.now() - s.lastUpdate.toMillis()) : 0;
         return lag > 45000 || s.connectionLoss || (s.events || []).some(e => e.type === 'connection-loss');
       });
+    } else if (devF === 'locked') {
+      list = list.filter(s => !!(s.lockedUntilAdmit || s.awaitingAdmit) && !s.instructorAdmitted);
     }
+
+    // Locked count + mass unlock visibility (all active sessions, not only filtered list)
+    try {
+      const lockedAll = all.filter(s => {
+        if (!s || String(s.id).startsWith('test_') || s.isMock) return false;
+        const st = String(s.status || 'active').toLowerCase();
+        if (st === 'submitted' || st === 'ended' || st === 'graded') return false;
+        return !!(s.lockedUntilAdmit || s.awaitingAdmit) && !s.instructorAdmitted;
+      });
+      const lockCountEl = document.getElementById('live-locked-count');
+      const massBtn = document.getElementById('live-mass-unlock');
+      if (lockCountEl) {
+        if (lockedAll.length) {
+          lockCountEl.style.display = '';
+          lockCountEl.textContent = lockedAll.length + ' locked';
+        } else {
+          lockCountEl.style.display = 'none';
+        }
+      }
+      if (massBtn) {
+        massBtn.style.display = lockedAll.length ? '' : 'none';
+        massBtn.onclick = () => this.massUnlockLockedSessions();
+      }
+    } catch (_) {}
     // When name filter is active: only those students should request live screens
     try {
       if (this._liveExamId) {
@@ -1536,7 +1649,7 @@ const Dashboard = {
               ${(!focused || !fs) ? '<div class="violation-banner">⚠️ ' + (!fs ? 'EXITED FULLSCREEN' : 'LEFT APPLICATION') + '</div>' : ''}
               <div class="name">${escapeHtml(s.studentName || s.studentEmail)}
                 ${s.lastStudentMessage ? '<span class="chip chip-ok" title="' + escapeHtml(s.lastStudentMessage) + '">💬</span>' : ''}
-                ${isMobile ? '<span class="chip">📱 Mobile</span>' : '<span class="chip">🖥️ Desktop</span>'}
+                ${isMobile ? '<span class="chip">📱 Mobile</span>' : '<span class="chip">🖥️ Desktop</span>'}${(s.lockedUntilAdmit || s.awaitingAdmit) && !s.instructorAdmitted ? ' <span class="chip" style="background:#fef3c7;color:#92400e">🔒 Locked</span>' : ''}
               </div>
               <div class="text-muted" style="font-size:0.8rem">${escapeHtml(s.studentEmail)}</div>
               <div class="text-muted" style="font-size:0.75rem">Violations: ${violations}</div>
