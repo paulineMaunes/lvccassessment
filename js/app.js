@@ -1,9 +1,20 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.100
+ * v1.5.101
  */
 
 const App = {
+
+  lastNameKey(name) {
+    const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return '';
+    // Prefer "Last, First" if comma present
+    if (String(name).includes(',')) {
+      return String(name).split(',')[0].trim().toLowerCase();
+    }
+    return parts[parts.length - 1].toLowerCase();
+  },
+
   navAction(fn, routeHint) {
     try {
       if (this.openInNewTabPreferred && this.openInNewTabPreferred()) {
@@ -634,7 +645,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.100</div>
+          <div class="app-version">Build v1.5.101</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -702,6 +713,27 @@ const App = {
     const role = Auth.userProfile.role;
     const params = new URLSearchParams(window.location.search);
     const examId = params.get('exam');
+    const view = params.get('view');
+    const sid = params.get('sid');
+
+    // Deep-link: open student summary / re-evaluate in this tab (used by "open in new tab")
+    if (sid && (view === 'summary' || view === 'reeval') && (role === 'superadmin' || role === 'teacher' || role === 'proctor')) {
+      const eid = params.get('examId') || params.get('exam') || '';
+      // Clear query so refresh does not loop
+      try {
+        const u = new URL(location.href);
+        u.searchParams.delete('view');
+        u.searchParams.delete('sid');
+        u.searchParams.delete('examId');
+        history.replaceState({}, '', u.pathname + (u.searchParams.toString() ? '?' + u.searchParams.toString() : '') + u.hash);
+      } catch (_) {}
+      if (view === 'reeval' && eid) {
+        this.reEvaluateSession(sid, eid);
+      } else {
+        this.showStudentAttempt(sid);
+      }
+      return;
+    }
 
     if (examId && role !== 'proctor') {
       const isTest = new URLSearchParams(window.location.search).get('test') === '1';
@@ -780,7 +812,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.100</div>
+              <div class="app-version">v1.5.101</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -9974,7 +10006,7 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
           const pts = ok ? 1 : 0;
           const wrap = document.createElement('div');
           wrap.style.cssText = 'margin-top:0.35rem;display:flex;gap:0.35rem;flex-wrap:wrap;align-items:center';
-          wrap.innerHTML = `<label style="font-size:0.8rem">Pts <input type="number" step="0.5" class="form-control reeval-point" data-qid="${key}" value="${pts}" style="width:64px;display:inline-block"/></label>
+          wrap.innerHTML = `<label style="font-size:0.8rem">Pts <input type="number" step="0.5" min="0" class="form-control reeval-point" data-qid="${key}" data-max="1" value="${pts}" style="width:64px;display:inline-block"/> <span class="text-muted">/ 1</span></label>
             <input type="text" class="form-control reeval-comment" data-qid="${key}" placeholder="Comment" style="min-width:100px;flex:1"/>`;
           td.appendChild(wrap);
         });
@@ -10008,7 +10040,8 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
             : `<span class="text-muted" style="font-size:0.75rem">Manual / re-evaluate</span>`;
           const wrap = document.createElement('div');
           wrap.style.cssText = 'margin-top:0.5rem;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center';
-          wrap.innerHTML = `${badge}<label style="font-size:0.8rem">Pts <input type="number" step="0.5" class="form-control reeval-point" data-qid="${qid}" value="${defaultPts}" style="width:72px;display:inline-block"/></label>
+          const maxPts = (autoD && autoD.max != null) ? Number(autoD.max) : 1;
+          wrap.innerHTML = `${badge}<label style="font-size:0.8rem">Pts <input type="number" step="0.5" min="0" class="form-control reeval-point" data-qid="${qid}" data-max="${maxPts}" value="${defaultPts}" style="width:72px;display:inline-block"/> <span class="text-muted">/ ${maxPts}</span></label>
             <input type="text" class="form-control reeval-comment" data-qid="${qid}" placeholder="Comment" style="min-width:120px;flex:1"/>`;
           card.appendChild(wrap);
         });
@@ -10029,8 +10062,9 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
             const autoD = (window._reevalAutoDetails && window._reevalAutoDetails[String(qid)]) || null;
             if (autoD && autoD.earned != null) defaultPts = Number(autoD.earned) || 0;
             else if (resp && corr && resp !== '—' && resp.toLowerCase() === corr.toLowerCase()) defaultPts = 1;
+            const maxPts = (autoD && autoD.max != null) ? Number(autoD.max) : 1;
             tr.insertAdjacentHTML('beforeend',
-              `<td class="reeval-td"><input type="number" step="0.5" class="form-control reeval-point" data-qid="${qid}" value="${defaultPts}" style="width:72px"/></td>
+              `<td class="reeval-td" style="white-space:nowrap"><input type="number" step="0.5" min="0" class="form-control reeval-point" data-qid="${qid}" data-max="${maxPts}" value="${defaultPts}" style="width:72px;display:inline-block"/> <span class="text-muted reeval-max">/ ${maxPts}</span></td>
                <td class="reeval-td"><input type="text" class="form-control reeval-comment" data-qid="${qid}" placeholder="Comment" style="min-width:120px"/></td>`);
           });
         });
@@ -10039,6 +10073,29 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
           total.innerHTML = ' Total score <input type="number" step="0.5" class="form-control reeval-total" style="width:100px;display:inline-block" />';
           bar.appendChild(total);
         }
+        const refreshReevalBadge = () => {
+          try {
+            let sum = 0, maxT = 0;
+            main.querySelectorAll('.reeval-point').forEach(inp => {
+              sum += Number(inp.value) || 0;
+              maxT += Number(inp.dataset.max) || 0;
+            });
+            if (!maxT) maxT = Number(window._reevalGradedMax) || sum;
+            let badge = document.getElementById('reeval-score-badge');
+            if (!badge) {
+              badge = document.createElement('span');
+              badge.id = 'reeval-score-badge';
+              badge.style.cssText = 'margin-left:0.75rem;font-weight:600';
+              bar.appendChild(badge);
+            }
+            const pct = maxT > 0 ? Math.round((sum / maxT) * 1000) / 10 : 0;
+            badge.textContent = 'Score: ' + sum + ' / ' + maxT + ' (' + pct + '%)';
+          } catch (_) {}
+        };
+        main.querySelectorAll('.reeval-point').forEach(inp => {
+          inp.addEventListener('input', refreshReevalBadge);
+        });
+        refreshReevalBadge();
         document.getElementById('reeval-close').onclick = () => this.showInstructorHome();
         document.getElementById('reeval-save').onclick = async () => {
           try {
@@ -10077,8 +10134,41 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
                 updatedAt: firebase.firestore.FieldValue.serverTimestamp()
               }, { merge: true });
             } catch (_) {}
-            await UI.alert('Scores saved. Student will see the updated result.', 'Saved');
-            // Reflect on results statistics if results page is open
+            // Update top attempt-stats on this page immediately
+            try {
+              let correct = 0, incorrect = 0, totalItems = 0;
+              main.querySelectorAll('.reeval-point').forEach(inp => {
+                totalItems++;
+                const earned = Number(inp.value) || 0;
+                const mx = Number(inp.dataset.max) || 1;
+                if (mx > 0 && earned >= mx) correct++;
+                else if (earned > 0) incorrect++;
+                else incorrect++;
+              });
+              const unattempted = 0;
+              const acc = maxUse > 0 ? Math.round((sum / maxUse) * 1000) / 10 : percentFinal;
+              const statsRow = document.querySelector('.attempt-stats');
+              if (statsRow) {
+                const vals = statsRow.querySelectorAll('.attempt-stat .val');
+                // Total | Correct | Incorrect | Unattempted | Accuracy
+                if (vals[0]) vals[0].textContent = String(totalItems || vals[0].textContent);
+                if (vals[1]) vals[1].textContent = String(correct);
+                if (vals[2]) vals[2].textContent = String(incorrect);
+                if (vals[3]) vals[3].textContent = String(unattempted);
+                if (vals[4]) vals[4].textContent = acc + '%';
+              }
+              // Score badge on toolbar
+              let badge = document.getElementById('reeval-score-badge');
+              if (!badge) {
+                badge = document.createElement('span');
+                badge.id = 'reeval-score-badge';
+                badge.style.cssText = 'margin-left:0.75rem;font-weight:600';
+                bar.appendChild(badge);
+              }
+              badge.textContent = 'Score: ' + sum + ' / ' + maxUse + ' (' + percentFinal + '%)';
+            } catch (_) {}
+            await UI.alert('Scores saved: ' + sum + ' / ' + maxUse + ' (' + percentFinal + '%). Student will see the updated result.', 'Saved');
+            // Reflect on results statistics if results page is open in this tab
             try {
               if (examId && document.getElementById('results-stats')) {
                 await App.showExamResults(examId);
@@ -10372,22 +10462,113 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
         </div>
       </div>`;
 
-    const el = document.getElementById('results-table');
-    el.innerHTML = `<div class="table-wrap"><table class="table" id="results-data-table"><thead><tr>
-      <th>Student</th><th>Email</th><th>Status</th><th>Score</th><th>%</th><th></th></tr></thead><tbody>
-      ${sessions.map(s => {
-        const g = gradeMap[s.id];
-        return `<tr>
+    // Default sort by last name
+    const sortSessions = (list, mode) => {
+      const arr = (list || []).slice();
+      if (mode === 'last') {
+        arr.sort((a, b) => {
+          const la = this.lastNameKey(a.studentName || a.studentEmail || '');
+          const lb = this.lastNameKey(b.studentName || b.studentEmail || '');
+          if (la !== lb) return la.localeCompare(lb);
+          return String(a.studentName || '').localeCompare(String(b.studentName || ''));
+        });
+      } else if (mode === 'first') {
+        arr.sort((a, b) => String(a.studentName || a.studentEmail || '').localeCompare(String(b.studentName || b.studentEmail || '')));
+      } else if (mode === 'score') {
+        arr.sort((a, b) => {
+          const ga = gradeMap[a.id] || {};
+          const gb = gradeMap[b.id] || {};
+          return (Number(gb.percent) || 0) - (Number(ga.percent) || 0);
+        });
+      }
+      return arr;
+    };
+    window._resultsSessions = sessions;
+    window._resultsGradeMap = gradeMap;
+    window._resultsExamId = examId;
+    window._resultsSort = 'last';
+
+    const renderResultsRows = (mode) => {
+      const sorted = sortSessions(window._resultsSessions || sessions, mode || window._resultsSort || 'last');
+      const gm = window._resultsGradeMap || gradeMap;
+      const eid = window._resultsExamId || examId;
+      return sorted.map(s => {
+        const g = gm[s.id];
+        const sid = String(s.id).replace(/'/g, '');
+        return `<tr data-student-name="${escapeHtml(s.studentName||'')}" data-student-email="${escapeHtml(s.studentEmail||'')}">
           <td>${escapeHtml(s.studentName||'')}</td><td>${escapeHtml(s.studentEmail||'')}</td>
           <td>${escapeHtml(s.status)}</td>
           <td>${g && g.score != null ? g.score+'/'+(g.maxScore||'') : '—'}</td>
           <td>${g && g.percent != null ? g.percent+'%' : '—'}</td>
           <td class="action-btns">
-            <button class="btn btn-sm btn-primary" onclick="App.viewSummarySession('${s.id}','${examId}')">View summary</button>
-            <button class="btn btn-sm btn-ghost" onclick="App.reEvaluateSession('${s.id}','${examId}')">Re-evaluate</button>
-            <button class="btn btn-sm btn-ghost" onclick="App.exportStudentReportPdf('${s.id}','${examId}')">Export PDF</button>
+            <button type="button" class="btn btn-sm btn-primary" data-open-summary="${sid}" data-exam="${eid}">View summary</button>
+            <button type="button" class="btn btn-sm btn-ghost" data-open-reeval="${sid}" data-exam="${eid}">Re-evaluate</button>
+            <button type="button" class="btn btn-sm btn-ghost" onclick="App.exportStudentReportPdf('${sid}','${eid}')">Export PDF</button>
           </td></tr>`;
-      }).join('')}</tbody></table></div>`;
+      }).join('');
+    };
+
+    const el = document.getElementById('results-table');
+    el.innerHTML = `
+      <div style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;margin-bottom:0.5rem">
+        <label style="font-size:0.9rem;display:inline-flex;align-items:center;gap:0.35rem">Sort by
+          <select id="results-sort" class="form-control" style="width:auto;min-width:10rem">
+            <option value="last" selected>Last name</option>
+            <option value="first">First name</option>
+            <option value="score">Score (high → low)</option>
+          </select>
+        </label>
+      </div>
+      <div class="table-wrap"><table class="table" id="results-data-table"><thead><tr>
+      <th>Student</th><th>Email</th><th>Status</th><th>Score</th><th>%</th><th></th></tr></thead><tbody id="results-tbody">
+      ${renderResultsRows('last')}</tbody></table></div>`;
+
+    const bindResultActions = () => {
+      document.querySelectorAll('[data-open-summary]').forEach(btn => {
+        btn.onclick = (e) => {
+          e.preventDefault();
+          const sid = btn.getAttribute('data-open-summary');
+          const eid = btn.getAttribute('data-exam') || '';
+          try {
+            const u = new URL(location.href);
+            u.search = '';
+            u.searchParams.set('view', 'summary');
+            u.searchParams.set('sid', sid);
+            if (eid) u.searchParams.set('examId', eid);
+            window.open(u.pathname + '?' + u.searchParams.toString(), '_blank', 'noopener');
+          } catch (_) {
+            App.viewSummarySession(sid, eid);
+          }
+        };
+      });
+      document.querySelectorAll('[data-open-reeval]').forEach(btn => {
+        btn.onclick = (e) => {
+          e.preventDefault();
+          const sid = btn.getAttribute('data-open-reeval');
+          const eid = btn.getAttribute('data-exam') || '';
+          try {
+            const u = new URL(location.href);
+            u.search = '';
+            u.searchParams.set('view', 'reeval');
+            u.searchParams.set('sid', sid);
+            if (eid) u.searchParams.set('examId', eid);
+            window.open(u.pathname + '?' + u.searchParams.toString(), '_blank', 'noopener');
+          } catch (_) {
+            App.reEvaluateSession(sid, eid);
+          }
+        };
+      });
+    };
+    bindResultActions();
+    const sortEl = document.getElementById('results-sort');
+    if (sortEl) {
+      sortEl.onchange = () => {
+        window._resultsSort = sortEl.value || 'last';
+        const tb = document.getElementById('results-tbody');
+        if (tb) tb.innerHTML = renderResultsRows(window._resultsSort);
+        bindResultActions();
+      };
+    }
 
     const rf = document.getElementById('results-student-filter');
     if (rf) {
