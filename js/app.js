@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.101
+ * v1.5.102
  */
 
 const App = {
@@ -645,7 +645,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.101</div>
+          <div class="app-version">Build v1.5.102</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -812,7 +812,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.101</div>
+              <div class="app-version">v1.5.102</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -6336,38 +6336,82 @@ const App = {
       countOne(q, answers[q.id]);
     });
 
-    // Align Total with max score (points). When 1pt per sub-item, maxScore === totalItems.
-    // Prefer maxScore when available so the Total card matches Score X / Y.
-    // ALWAYS: Total card === max score (points). Never show question-count when points differ.
+    // Prefer stored session max (after publish / re-eval), then graded maxScore
+    const storedMax = Number(session && session.maxScore);
+    if (storedMax > 0) maxScore = storedMax;
+    if (session && session.score != null && !isNaN(Number(session.score))) {
+      // After instructor re-eval, use saved score when present
+      if (session.itemPoints || session.reEvaluatedAt) score = Number(session.score) || score;
+    }
+    // Sum of max points from grade details if maxScore still 0
+    if (!(maxScore > 0) && questions.length && window.Regular && Regular.gradeAnswers) {
+      try {
+        const g2 = Regular.gradeAnswers(questions, answers);
+        maxScore = Number(g2.maxScore) || 0;
+        if (!(score > 0)) score = Number(g2.score) || 0;
+      } catch (_) {}
+    }
+    // Fallback: sum question.points (including nested passage / wordbox / match items)
+    if (!(maxScore > 0)) {
+      let sumPts = 0;
+      const addPts = (q) => {
+        if (!q) return;
+        if ((q.type === 'passage' || q.isPassageSet) && Array.isArray(q.questions)) {
+          q.questions.forEach(addPts); return;
+        }
+        if (q.type === 'wordbox' && Array.isArray(q.questions) && q.questions.length) {
+          q.questions.forEach(kq => { sumPts += Number(kq.points) || 1; }); return;
+        }
+        if (q.type === 'match') {
+          const n = (q.left || []).length || 1;
+          if (q.pointsMode === 'each' || q.pointsPerItem != null) {
+            sumPts += n * (Number(q.pointsPerItem) || Number(q.points) || 1);
+          } else {
+            sumPts += Number(q.points) || n;
+          }
+          return;
+        }
+        if (q.type === 'categorize' && Array.isArray(q.items) && q.items.length) {
+          sumPts += q.items.length * (Number(q.pointsPerItem) || 1);
+          return;
+        }
+        sumPts += Number(q.points) || 1;
+      };
+      questions.forEach(addPts);
+      maxScore = sumPts;
+    }
+
+    // Total on summary = sum of max points (never question count alone when points exist)
     const total = maxScore > 0 ? maxScore : (totalItems || questions.length || 0);
-    const correctDisp = maxScore > 0 ? score : correct;
-    // Scale incorrect/unattempted to remaining points when using point totals
+    let correctDisp = score;
+    if (!(session && session.itemPoints) && maxScore > 0 && Math.abs(score - correct) < 0.01) {
+      correctDisp = score;
+    } else if (!(maxScore > 0)) {
+      correctDisp = correct;
+    }
     let incorrectDisp = incorrect;
     let unattemptedDisp = unattempted;
-    if (maxScore > 0 && totalItems > 0 && Math.abs(maxScore - totalItems) > 0.01) {
-      // points-per-item != 1: map item counts proportionally is complex; use residual points
-      const used = score;
-      const wrongPts = Math.max(0, (maxScore - score) - (unattempted * (maxScore / totalItems)));
-      incorrectDisp = Math.round(wrongPts * 100) / 100;
-      unattemptedDisp = Math.round((unattempted * (maxScore / totalItems)) * 100) / 100;
-    } else if (maxScore > 0) {
-      // 1 point per counted item — incorrect/unattempted already in points
-      incorrectDisp = incorrect;
-      unattemptedDisp = unattempted;
-      // ensure Correct uses item-correct when score matches
-      if (Math.abs(score - correct) < 0.01) {
-        /* ok */
+    if (maxScore > 0) {
+      // Remaining points after correct score, split roughly using item ratios when possible
+      const remain = Math.max(0, maxScore - (Number(correctDisp) || 0));
+      if (incorrect + unattempted > 0) {
+        const ratioU = unattempted / (incorrect + unattempted);
+        unattemptedDisp = Math.round(remain * ratioU * 10) / 10;
+        incorrectDisp = Math.round((remain - unattemptedDisp) * 10) / 10;
+      } else {
+        incorrectDisp = remain;
+        unattemptedDisp = 0;
       }
     }
 
-    const accuracy = total > 0 ? Math.round((correctDisp / total) * 100) : 0;
+    const accuracy = total > 0 ? Math.round(((Number(correctDisp) || 0) / total) * 100) : 0;
     return {
       total,
       correct: correctDisp,
       incorrect: incorrectDisp,
       unattempted: unattemptedDisp,
       accuracy,
-      score,
+      score: Number(correctDisp) || score,
       maxScore: maxScore || total,
       totalItems
     };
@@ -6896,7 +6940,8 @@ const App = {
     rows.forEach(r => {
       if (r.sectionHeader) { curSec = r.sectionHeader; normalRows.push(r); return; }
       const t = (r.qType || r.q?.type || '').toLowerCase();
-      if (t === 'match') matchBlocks.push({ ...r, section: curSec });
+      // Match: keep in normal column table (Question | Response | Correct) — no line diagram
+      if (t === 'match') normalRows.push(r);
       else if (t === 'passage' || r.q?.isPassageSet) passageBlocks.push({ ...r, section: curSec });
       else if (t === 'table') tableBlocks.push({ ...r, section: curSec });
       else normalRows.push(r);
@@ -6975,8 +7020,8 @@ const App = {
     document.getElementById('btn-review-scores')?.addEventListener('click', () => {
       this.openScoreReview(session, exam, questions);
     });
-    // Connect match result lines after layout
-    requestAnimationFrame(() => this._drawMatchResultLines());
+    // Match uses column layout on summary — no line diagram
+    // requestAnimationFrame(() => this._drawMatchResultLines());
   },
 
   _drawMatchResultLines() {
@@ -7016,33 +7061,42 @@ const App = {
   _renderSpecialResultBlocks(session, exam, answers, matchBlocks, passageBlocks, tableBlocks) {
     const esc = escapeHtml;
     let html = '';
-    // MATCH full width
+    // MATCH: same columns as other types (no connecting lines)
     if (matchBlocks.length) {
-      html += `<div class="result-special card mt-2"><h3 class="result-special-title">Match</h3>`;
+      html += `<div class="result-section card mt-2"><h3 class="result-special-title">Match</h3>
+        <table class="table result-equal-cols"><thead><tr>
+          <th>Question</th><th>Your Response</th><th>Correct Answer</th>
+        </tr></thead><tbody>`;
+      const seenMatch = new Set();
       matchBlocks.forEach(r => {
         const q = r.q || {};
-        const left = q.left || [];
-        const right = q.right || [];
-        const val = answers[q.id];
-        // Build SVG connecting lines (like assessment UI)
-        const pairs = [];
+        const mid = String(q.id || r.prompt || '');
+        if (r.prompt != null && (r.response != null || r.correct != null) && !(q.left && q.left.length)) {
+          html += `<tr class="hist-q-row" data-result-qid="${esc(mid)}">
+            <td class="hist-cell-q"><div class="hist-value">${esc(r.prompt)}</div></td>
+            <td class="hist-cell-r"><div class="hist-value">${esc(String(r.response || '—'))}</div></td>
+            <td class="hist-cell-c"><div class="hist-value">${esc(String(r.correct || '—'))}</div></td>
+          </tr>`;
+          return;
+        }
+        if (mid && seenMatch.has(mid)) return;
+        if (mid) seenMatch.add(mid);
+        const left = q.left || q.columnA || [];
+        const right = q.right || q.columnB || [];
+        const val = (answers && q.id != null) ? (answers[q.id] || {}) : {};
+        const key = Array.isArray(q.correct) ? q.correct : left.map((_, i) => i);
         left.forEach((a, i) => {
-          const ri = val && typeof val === 'object' ? (val[i] != null ? val[i] : val[String(i)]) : null;
-          if (ri != null && !Number.isNaN(Number(ri))) pairs.push({ li: i, ri: Number(ri) });
+          const ri = val[i] != null ? val[i] : val[String(i)];
+          const studB = ri != null ? right[Number(ri)] : '—';
+          const corrB = right[key[i]] != null ? right[key[i]] : '—';
+          html += `<tr class="hist-q-row" data-result-qid="${esc(mid + '-' + i)}">
+            <td class="hist-cell-q"><div class="hist-value">${esc(a || ('Item ' + (i + 1)))}</div></td>
+            <td class="hist-cell-r"><div class="hist-value">${esc((a || '') + ' → ' + (studB != null ? studB : '—'))}</div></td>
+            <td class="hist-cell-c"><div class="hist-value">${esc((a || '') + ' → ' + corrB)}</div></td>
+          </tr>`;
         });
-        const leftHtml = left.map((a, i) => `<div class="mres-item mres-a" data-li="${i}"><span class="mres-text">${esc((i+1)+'. '+(a||''))}</span><span class="mres-dot"></span></div>`).join('');
-        const rightHtml = right.map((b, i) => `<div class="mres-item mres-b" data-ri="${i}"><span class="mres-dot"></span><span class="mres-text">${esc(b||'')}</span></div>`).join('');
-        const pairData = pairs.map(p => p.li + ':' + p.ri).join(',');
-        html += `<div class="match-result-block">
-          <p class="match-result-instr"><strong>${esc(q.prompt || 'Match')}</strong></p>
-          <div class="match-visual-flex" data-pairs="${pairData}">
-            <div class="mres-col mres-col-a">${leftHtml}</div>
-            <svg class="mres-svg"></svg>
-            <div class="mres-col mres-col-b">${rightHtml}</div>
-          </div>
-        </div>`;
       });
-      html += `</div>`;
+      html += `</tbody></table></div>`;
     }
     // PASSAGE full width
     if (passageBlocks.length) {
