@@ -810,3 +810,9 @@ If features seem missing, replace **all** app files from the zip (not only one J
 ## v1.5.102
 - Summary / re-evaluate: **Total** = sum of max points (matches Score X / Y denominator)
 - Match on summary / re-evaluate: column layout (Question | Your Response | Correct Answer) — no connecting lines
+
+## v1.5.103
+- Summary Total = current exam max points (config), not stale 53 when max is 65
+- Accuracy capped at 100%; Correct = earned score
+- Re-evaluate: top stats update live as Points are edited (same as toolbar)
+- Re-evaluate Close → Results page for that assessment
