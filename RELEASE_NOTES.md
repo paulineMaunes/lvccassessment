@@ -801,3 +801,8 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Auto-grade open-ended when a key is set; multi-line keys match if every line appears in the student answer
 - Re-evaluate all scores: recalculates from current exam keys and refreshes Results stats (session score preferred)
 - Removed Top performing students tile from Results
+
+## v1.5.101
+- Results: sort by last name (default), first name, or score
+- View summary & Re-evaluate open in a new tab
+- Re-evaluate: each Points field shows max e.g. `1 / 3`; live score badge; Save updates top Total/Correct/Incorrect/Accuracy stats
