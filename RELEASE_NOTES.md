@@ -816,3 +816,8 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Accuracy capped at 100%; Correct = earned score
 - Re-evaluate: top stats update live as Points are edited (same as toolbar)
 - Re-evaluate Close → Results page for that assessment
+
+## v1.5.104
+- Re-evaluate Save: writes score + correct maxScore to sessions AND grades (was writing stale max)
+- Results grid: always uses current exam max points (fixes 62/58 → 62/65); percent capped at 100%
+- After Save, navigates to Results so scores refresh immediately
