@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.99
+ * v1.5.100
  */
 
 const App = {
@@ -634,7 +634,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.99</div>
+          <div class="app-version">Build v1.5.100</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -780,7 +780,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.99</div>
+              <div class="app-version">v1.5.100</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -6499,7 +6499,17 @@ const App = {
     }
 
     if (isCorrectKey) {
-      if (q.type === 'essay') return '(Evaluated by instructor)';
+      if (q.type === 'essay' || q.type === 'open' || q.type === 'openended' || q.type === 'open_ended') {
+        const key = (q.correct != null && String(q.correct).trim() !== '')
+          ? q.correct
+          : (q.suggestedAnswer != null && String(q.suggestedAnswer).trim() !== ''
+            ? q.suggestedAnswer
+            : (q.rubric != null && String(q.rubric).trim() !== '' ? q.rubric : ''));
+        if (key !== '') return String(key);
+        const alts = q.alternatives || q.alternateAnswers || [];
+        if (Array.isArray(alts) && alts.length) return alts.filter(a => a != null && String(a).trim() !== '').map(String).join(' / ') || '—';
+        return '(No answer key set — evaluate manually)';
+      }
       if (q.type === 'multiple' || q.type === 'dropdown' || q.type === 'multiselect') {
         if (q.multiCorrect === true && Array.isArray(q.correct)) {
           return q.correct.map(labelAt).filter(Boolean).join(', ') || '—';
@@ -10154,7 +10164,7 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
         try {
           if (window.Regular && Regular.gradeAnswers) graded = Regular.gradeAnswers(questions, answers);
         } catch (e) { console.warn('grade', d.id, e); }
-        // Preserve manual itemPoints only for items that were skipped (no key) if present
+        // Prefer auto scores from current keys. Keep prior manual only if still no key (skipped).
         const itemPoints = {};
         (graded.details || []).forEach(det => {
           if (!det || det.id == null) return;
@@ -10164,19 +10174,26 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
             itemPoints[det.id] = Number(det.earned) || 0;
           }
         });
+        // Sum item points; if empty fall back to graded.score
         let score = Object.keys(itemPoints).length
           ? Object.values(itemPoints).reduce((a, b) => a + (Number(b) || 0), 0)
-          : (graded.score || 0);
-        const maxScore = graded.maxScore || s.maxScore || 0;
+          : (Number(graded.score) || 0);
+        // If instructor had only manual total and no keys, keep that only when grade is zero and prior score exists and no keys graded
+        const maxScore = Number(graded.maxScore) || Number(s.maxScore) || 0;
         const percent = maxScore > 0 ? Math.round((score / maxScore) * 1000) / 10 : 0;
         const accuracy = percent;
+        const correctCount = (graded.details || []).filter(x => x && x.ok).length;
+        const incorrectCount = (graded.details || []).filter(x => x && !x.ok && !x.skipped).length;
+        const unattemptedCount = (graded.details || []).filter(x => x && x.skipped).length
+          + (graded.details || []).filter(x => x && !x.ok && !x.skipped && (Number(x.earned) === 0) && answers && answers[x.id] == null).length;
         await window.db.collection('sessions').doc(d.id).update({
           score,
           maxScore,
           percent,
           accuracy,
           itemPoints,
-          correctCount: (graded.details || []).filter(x => x && x.ok).length,
+          correctCount: typeof correctCount !== 'undefined' ? correctCount : (graded.details || []).filter(x => x && x.ok).length,
+          incorrectCount: typeof incorrectCount !== 'undefined' ? incorrectCount : 0,
           totalQuestions: (graded.details || []).length || s.totalQuestions || 0,
           reEvaluatedAt: firebase.firestore.FieldValue.serverTimestamp(),
           reEvaluatedBy: Auth.currentUser && Auth.currentUser.uid,
@@ -10236,9 +10253,22 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
     `, 'exams');
 
     const sessionsSnap = await window.db.collection('sessions').where('examId', '==', examId).get();
-    const sessions = sessionsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    let sessions = sessionsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+      .filter(s => !s.isMock && String(s.status) !== 'superseded' && !String(s.id).startsWith('test_'));
     const grades = await Exam.listGrades(examId);
     const gradeMap = Object.fromEntries(grades.map(g => [g.sessionId, g]));
+    // Prefer live session scores (especially after Re-evaluate all)
+    sessions.forEach(s => {
+      if (s.score == null && s.maxScore == null) return;
+      const prev = gradeMap[s.id] || {};
+      gradeMap[s.id] = {
+        ...prev,
+        sessionId: s.id,
+        score: s.score != null ? s.score : prev.score,
+        maxScore: s.maxScore != null ? s.maxScore : prev.maxScore,
+        percent: s.percent != null ? s.percent : (s.accuracy != null ? s.accuracy : prev.percent)
+      };
+    });
     const questions = Regular.flattenQuestions(exam);
 
     // Auto-grade missing (use session accuracy/score when already computed — much faster)
@@ -10339,10 +10369,6 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
             <svg viewBox="0 0 100 100" class="pie-svg">${slices}</svg>
             <div class="pie-legend">${legend}</div>
           </div>
-        </div>
-        <div class="stat-card pie-card">
-          <div class="stat-label">Top performing students</div>
-          <div class="pie-legend" style="margin-top:0.75rem">${topList}</div>
         </div>
       </div>`;
 
