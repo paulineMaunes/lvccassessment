@@ -1,68 +1,803 @@
-<!DOCTYPE html>
-<html lang="en" data-theme="light">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>LVCC Assessment Portal</title>
-  <link rel="icon" type="image/png" href="assets/lvcc-logo.png" />
-  <link rel="shortcut icon" type="image/png" href="assets/lvcc-logo.png" />
-  <link rel="apple-touch-icon" href="assets/lvcc-logo.png" />
-  <script>
-    try {
-      var t = localStorage.getItem('lvcc_theme') || 'light';
-      document.documentElement.setAttribute('data-theme', t);
-    } catch (e) {}
-  </script>
-  <link rel="stylesheet" href="css/styles.css?v=252" />
-  <!-- Retro font: swap so text shows immediately with fallback -->
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
-</head>
-<body>
-  <div id="app">
-    <div id="loading" class="loading-screen">
-      <div class="spinner"></div>
-      <p>Loading LVCC Assessment Portal...</p>
-    </div>
-  </div>
+# LVCC Assessment Portal — Release Notes
 
-  <!-- Firebase (required) -->
-  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage-compat.js"></script>
+## v1.3.1 — 2026-08-19
 
-  <!-- jsPDF local first -->
-  <script src="js/vendor/jspdf.umd.min.js"></script>
+### Fixed
+- **Personal Gmail access**: Domain/invite check runs on every sign-in; unauthorized accounts are signed out immediately (no bypass via existing user docs).
+- **Mobile header**: Only logo + “LVCC Assessment Portal” on the header; full name and Logout live in the hamburger menu.
+- **Prompts**: Removed long github.io URLs from alerts; copy uses a short confirmation.
+- **Student portal**: Removed sample exam-link section.
+- **Logo alignment**: Brand block left-aligned on all views.
 
-  <!-- App scripts -->
-  <script src="js/firebase-config.js?v=252"></script>
-  <script src="js/ui.js?v=252"></script>
-  <script src="js/theme.js?v=252"></script>
-  <script src="js/auth.js?v=252"></script>
-  <script src="js/exam.js?v=252"></script>
-  <script src="js/regular.js?v=252"></script>
-  <script src="js/monitor.js?v=252"></script>
-  <script src="js/editor.js?v=252"></script>
-  <script src="js/dashboard.js?v=252"></script>
-  <script src="js/notifications.js?v=252"></script>
-  <script src="js/app.js?v=252"></script>
+### Added
+- **QR code** sharing per assessment (Link / QR panel).
+- **Share to co-teacher**: creates a fresh copy for them to configure.
+- **Edit / Delete** assessment (delete requires typing the assessment name).
+- **Categorized actions** on assessment cards: Monitor · Share · Manage.
+- **Gamified multiple-choice** builder and student UI (colored option cards; click ✓ for correct answer).
+- **Mock flow**: Generate mock from History (per subject, code/regular checkboxes); Mock tab shows history only.
+- **Time’s up**: View results / Back to home buttons.
+- Code assessment **default max score 100**; regular assessments use per-question points (no global max score field).
+- Start time cannot be before current date/time for new schedules.
 
-  <!-- Heavy libs deferred — not needed for first paint / login -->
-  <script>
-    window.addEventListener('load', function () {
-      setTimeout(function () {
-        var s1 = document.createElement('script');
-        s1.src = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.0/min/vs/loader.min.js';
-        s1.async = true;
-        document.body.appendChild(s1);
-        var s2 = document.createElement('script');
-        s2.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
-        s2.async = true;
-        document.body.appendChild(s2);
-      }, 1500);
-    });
-  </script>
-</body>
-</html>
+### Renamed
+- “Exam(s)” → **Assessment(s)** across teacher/student UI.
+
+### Deploy
+1. Publish `firestore.rules` if not already.
+2. Restore Firebase config keys.
+3. Push to GitHub Pages; hard-refresh.
+
+## v1.3.2 — 2026-08-19
+
+### Security / roles
+- **Firestore rules** enforce roles:
+  - **Superadmin**: manage users/teachers; full access where needed
+  - **Teacher**: create / edit / delete **their own** assessments; invites, proctors, grades
+  - **Student**: take assessments via teacher link; write own sessions; create **mock history** only (cannot create real assessments)
+- App UI blocks students from Create Assessment.
+
+## v1.4.0 — 2026-08-19
+
+### Added / changed
+- Themed center modals (UI.alert / confirm / prompt) — no browser "says" dialogs for main flows
+- Live dashboard **right integrity panel** with as-you-type filter + screenshot thumbnails
+- **Integrity issues** under Monitor — full permanent history (`integrityHistory`)
+- Screen thumbnail captured on integrity events (html2canvas)
+- **Share to Co-teacher** label; Draft / Publish on create; Regular assessment default
+- Essay (renamed from Open ended, 1000 chars); TF categories; fill-in blanks; table fill foundations
+- Submit no longer fires false "leave page" integrity event
+- Desktop: name/logout only in header (not sidebar)
+
+### Note
+Full Google-Docs-style passage multi-tab editor and complete visual editors for every advanced item type continue to use structured data models; passage sets and rich cell editing can be expanded further in a follow-up.
+
+## v1.4.1 — 2026-08-19
+
+### Added
+- **Light / Dark theme** toggle on all screens (header + mobile menu + login)
+- Preference saved in **localStorage** and **Firestore user profile** (survives re-login)
+- Default theme: **Dark**
+- Build stamp **v1.4.1** in header to verify deploy
+
+### Deploy note
+If features seem missing, replace **all** app files from the zip (not only one JS file), then hard-refresh or clear cache. Confirm **v1.4.1** appears next to the logo.
+
+## v1.5.0
+- Integrity gate: centered logo/button, larger justified text
+- Desktop fullscreen enforced; camera permission at start
+- Live grid: screen + camera thumbs (overwrite); HQ stills only on violation
+- Stop monitoring after submit (history kept)
+- Single-question gamified take UI with skip / skip passage
+- Mobile End assessment with confirm → auto-submit
+- History: real option values; Create mock exam checkboxes; mock retake randomized
+- Non-live layouts restored to classic sidebar; live view keeps 3-panel density
+
+## v1.5.1
+- Brand colors (light/dark hex palette); contrast placeholders
+- Header/sidebar layout: theme icon by role; name/email/logout in menu bottom; logo → Dashboard
+- Live: screen only; connection ping; HQ on violation; paste ignore/deduct
+- History: row click, mock checkboxes on demand, separate Mock History page
+- Full-screen gamified take UI; skip loops to unanswered
+- Manage / Monitor / Share equal actions; direct edit state
+
+## v1.5.2
+- Sidebar shell (logo/version/user in menu), Segoe UI, white minimal icons, settings popover theme switch
+- Dark mode primary buttons #F2A240; collapsible nav; mobile logo hamburger
+- Agreement text without camera/evidence; no camera capture
+- Fluid equal assessment action buttons; test-as-student role glitch fixed
+- Integrity PDF + HQ image export with dated filenames; Excel CSV newline fix
+- Student History renamed Assessments; layout grid; results top performers
+- Take UI: centered nav, submit confirm on last unanswered, FAB z-index
+
+## v1.5.3
+- Student join code screen; Join Assessment on dashboard; 8-digit assessment ID
+- Take UI theme bg, full-width question, choice colors, FAB fix, browser fullscreen
+- Draft save + remote autosave; Publish schedule + share ID/QR
+- My Assessments Manage/Monitor/Share groups; Co-Instructor + Proctor
+- Mock history persist; history left align; teacher dashboard stats
+- Shell: mobile avatar menu; desktop user row; settings theme only
+
+## v1.5.4
+- Fix showStudentJoinScreen / join by 8-digit code
+- Desktop sidebar user (avatar, name, email, role) visible
+- Test as student: future timer window, skip gate block
+- Draft/Publish save sections+questions; integrity thumbs + hide names
+- Live dashboard open; paste/copy/resize/right-click/fullscreen violations
+- Take UI: question full width, choices below, theme background
+
+## v1.5.5
+- Reliable assessment builder: collectAssessmentForm + saveAssessment
+- Save as Draft and Publish wired to single save path with error messages
+- Edit loads sections/questions and re-renders builder
+- New assessment clears previous editor state
+
+## v1.5.6
+- Agree & Continue: prompt screen share first, non-blocking start, then fullscreen
+- 30s grace after join (no false left-app / fullscreen violations); connection-loss after 30s poor network
+- Take UI: question ~3/4 height, selected choice black border, green Skip, centered timer
+- End / Submit / floating message / instructor message fixes
+- History + PDF: Total / Correct / Incorrect / Unattempted + accuracy
+
+## v1.5.7
+- Modals above take UI (z-index) so Message / End / Confirm work
+- Reshare then force fullscreen; paste warnings no longer freeze buttons
+- Integrity list chronological by time; PDF export loads jsPDF if needed
+- Live: End assessment per student + End all assessments
+- Take layout fits device height/width with less scrolling
+
+## v1.5.8
+- End assessment / Talk to instructor no longer logged as window-blur
+- PDF export: multi-CDN jsPDF loader
+- Student "Talk to instructor" pops up on instructor live view with reply
+- End assessment (per student + all) fixed with direct Firestore update
+
+## v1.5.9
+- PDF export: local jsPDF vendor (js/vendor/jspdf.umd.min.js) — no CDN required
+- Fallback printable HTML export if jsPDF still fails
+
+## v1.5.10
+- Modal overlays block background clicks; popups usable again
+- Fixed broken Duplicate / toggleExamActive methods
+- Edit assessment re-renders saved questions without needing Add Question
+- Integrity PDF includes screenshots when available (+ HTML fallback)
+- Take layout larger fit to device; Word Box type with bank grid + drag-drop blanks
+
+## v1.5.11
+- Edit assessment shows full question editors (options/correct answers) immediately
+- Word Box: sentence with {{n}} blanks + drag tiles (Wayground-style)
+- Restored ~3/4 question box layout on take screen
+
+## v1.5.12
+- Q numbering per section in builder
+- Edit loads full question editors immediately
+- Word Box: visual blank boxes, word grid, drag answers in config
+- Fill-in-the-blank: multi blanks open-ended (no bank)
+- Passage dual-panel RTE + question builder
+- Categorize dual-panel categories/items + student drag sort
+- History shows sentence + readable answers
+- Take UI locked to 100vh with side padding; ~3/4 question area
+
+## v1.5.13
+- Edit updates existing assessment (persistent edit id); no longer creates a new one
+- Config buttons (Add Question / Save / Publish) fixed — picker no longer nested incorrectly
+- Integrity Export PDF embeds violation screenshots (JPEG/PNG)
+
+## v1.5.14
+- Question type picker always available (no longer nested under existing sections)
+- Create/Edit assessment: Add Question works with zero questions
+- Initial builder paint wires Save / Publish / Add Question on open
+
+## v1.5.15
+- Categorize: fixed add category / item / answer key (schema + handlers)
+- Passage: fixed Add New Question
+- Local image upload for Passage editor and Categorize items
+
+## v1.5.16
+- Save: compress images; block writes over Firestore 1 MB doc limit (clear error)
+- Categorize: drag images when provided; remove image option
+- Passage take: dual panel 50/50 independent scroll, all questions on same page
+- Points per blank/item for fill, wordbox, categorize, table
+- Alternates for open-ended/essay; table-fill dual panel + calculator
+- Table fill copy/paste not flagged as integrity
+- window-blur → "Clicked outside assessment page"
+- Intentional leave lock + instructor Admit / Ignore / End
+- Live write budget to protect Spark free-tier quotas
+
+## v1.5.17
+- Multiple images no longer stored inside the Firestore exam document
+- On save: images upload to Firebase Storage; exam doc only keeps download URLs (stays under 1 MB)
+- Requires Firebase Storage enabled + storageBucket in firebase-config + Storage rules for assessments/{examId}/**
+
+## v1.5.18
+- Live dashboard: "Show live screens" toggle (off = quota saver; students stop uploading frames)
+
+## v1.5.19
+- Live screens OFF is silent for students: screen share stays on; only instructor stops receiving frames
+
+## v1.5.20
+- Table fill scoring: Full points only if all blanks correct OR points for every correct blank
+
+## v1.5.21
+- Hard-stop monitoring on submit / time-up / teacher end / test-as-student end (clears timers, streams, session id)
+- Student auto-stops live writes when session status becomes submitted
+
+## v1.5.22
+- Live: focus one student screen only
+- Table fill: instruction as merged first row, visible grid, centered, professional calculator
+- Passage: left stays; next/skip only advances questions; Skip passage visible
+- Builder: Duplicate question for all types
+- Next requires answer; Skip allows blanks
+
+## v1.5.23
+- Live screens OFF by default (discreet share); instructor can enable all or one student
+- Idle 5 min → 10s countdown → end session (quota saver)
+- Tighter live write budget for large classes
+- Passage: 100vh dual pane, left tabs, all questions on right, Skip passage only
+- Match question type with line pairing, 1 pt per correct pair
+
+## v1.5.24
+- Live: remove text snapshot on regular exam cards (quota)
+- Screen share required (mobile+desktop); no start without Allow; monitoring cue on take UI
+- Save draft/publish: Storage upload parked — inline images under 1MB only
+- Test as student: skip lock path, default examType regular when questions exist, surface errors
+- Login subtitle: Integrity - We live with honesty, truthfulness, and moral courage.
+
+## v1.5.25
+- Fix renderTake is not defined (rebuild take engine)
+- Universal fake screen-share consent when getDisplayMedia unavailable
+- Chrome/Edge only + multi-monitor block before exam start
+- Integrity rules title, padding, Security Notice
+- Superadmin: remove non-school accounts + retention policy
+- Unpublished / not-started assessment messages
+
+## v1.5.26
+- Fix wordbox/categorize drag (desktop + tap-to-place on mobile)
+- Passage MC selection binding; open-ended note wording
+- Skip always advances
+- Exam code display 1234-5678 (raw 8 digits retained)
+- Publish: optional invites, centered success with title/code/times/QR
+- Avatar popover closes menu; mobile nav from right
+- Match centered + clear click-A-then-B instruction
+
+## v1.5.27
+- Re-bind wordbox/categorize drag (cursor + dropEffect + tap-to-place)
+- Passage MC full bindStudentMC; points + multiCorrect per passage question
+- Skip always advances (skip markers)
+- Exam code 1234-5678 inputs bound; publish success modal retained
+
+## v1.5.28
+- Skip always advances to next question group
+- Table fill calculator keys + keyboard + clipboard history
+- Right-click blocked except table fill copy/paste
+- Passage MC event delegation
+- Mobile: no screen-share requirement (monitoring cue kept)
+- My Assessments: Closed label, Reopen with new schedule
+- Results: human labels for categorize, match, passage, table
+
+## v1.5.29
+- Table fill: numbers-only calc, blue headers, no row nums, equal panel heights
+- Take: Submit Answer; Skip passage ghost style; passage equal panes; white option labels
+- Idle: instructors/test not signed out after 5 min
+- Aesthetic scrollbars; collapsed nav full-width hover + titles; minimalist icons
+- Fill/wordbox centering; word bank table cells
+- Passage builder tabs + Add Question fixed bottom
+- FUNCTIONAL_SPECIFICATIONS.md added (update each release)
+
+## v1.5.30
+- Removed Skip (kept Skip passage)
+- Publish randomize option (per section; not passage/table)
+- FIB centered; inline builder + Alt popover
+- Passage MC border; wordbox dual layout
+- Staff idle 10 min; test-as-student idle ends session
+- Table subheader; show/hide student calculator
+
+## v1.5.31
+- Version badge v1.5.31; Skip/Skip passage removed
+- Passage MC same as normal MC (no sticky checks)
+- Drag rebind; table/clipboard heights; FIB collect + display
+- Wordbox dual config + reusable bank; section order randomization
+- Publish: Copy code / Copy link only; Edit published uses Save (stays published)
+- Teacher→Instructor in UI copy
+
+## v1.5.32
+- Fix Auth.checkPendingInstructor is not a function (and related Instructor/Teacher API aliases)
+
+## v1.5.33
+- Restore Regular.flattenQuestions and Regular.groupQuestionsForTake (fixes Test as student / preview error)
+
+## v1.5.34
+- Fix answer acceptance so Submit Answer advances after student answers
+- Passage MC uses same take-opt selection as regular MC
+- Options left-aligned (not centered)
+- Table fill: fixed calculator height; clipboard scrolls inside panel; table left panel full height
+- Table config: single panel, add/remove column/row/subheader, alternative popup
+- Match answer key labels use Column A values
+- Duplicate title only one "(Copy)"
+- Larger fill-in-the-blank font on student take
+
+## v1.5.35
+- Mobile light: header title white; hamburger/menu slides from right
+- Match mobile: stacked cards, hide lines, pair chips
+- Publish (My Assessments) + Reopen: same schedule + new code + publish success modal
+- Integrity rules card: 100vh lock, scroll body only (logo + Accept visible)
+- Submit Answer: stronger DOM re-read for current question
+- Live dashboard: broader in-progress sessions; setLiveScreensEnabled enables student thumb uploads
+- 2nd monitor during exam: lock + integrity "Connected 2nd Monitor"
+- Student history: no Q1 labels; section headers; mobile label-then-value; no bare {{1}}
+
+## v1.5.36
+- Reopen: new sessionWave so students can retake without "already submitted"; publish popup + optional invites kept
+- Table fill config: fixed equal cells, +/− row/col, horizontal scroll, blue header/subheader, tools no longer stretch cells
+- Wordbox: +/− bank grid, {} word answers with orange Consolas highlight, no prompt boxes, dual-panel scroll at 100vh
+- Categorize: points beside prompt; categories then Add Category; items then Add Item
+- Passage: double-click tab to rename
+- Match: points beside prompt
+- Fill: red answer borders; full-points vs per-blank scoring; auto total when per-blank
+- Points mode: hide Points per blank when Full points; show + auto total when per-blank; order is per-blank then total
+- History: section titles only (no instructions); table blanks as separate rows; passage/wordbox expanded; MC shows text not [object Object]; mobile no duplicate labels
+- MC options required (non-blank) on save/publish
+
+## v1.5.37
+- Builder Undo / Redo for assessment configuration
+- Submit Answer requires all blanks filled (wordbox, fill, categorize, table, match)
+- Fill-in-the-blank student font slightly larger
+- Wordbox config: live orange Consolas in textbox, no tip labels, points per correct answer
+- Categorize: Add Category above category rows; items below; points-per-item before total (auto total)
+- Match answer key labels update live as Column A is typed
+- MC: trash left, correct mark right of each option
+- Remove/Delete/X builder buttons gray (light & dark)
+- Settings → About (logo, Integrity subtitle, build, tribute to Ms. Joane Pauline S. Maunes)
+- Section instructions shown in futuristic frame before section questions
+- Theme toggle on student join and during assessment
+- Retro exam theme (pixel HUD / neon cyan panels; cycles Light → Dark → Retro)
+
+## v1.5.38
+- Wordbox config: only matched {words} turn orange Consolas (preview); sentence text stays normal
+- Builder delete/muted buttons: clear background, gray text & border
+- Categorize rows: prompt+points → Categories title+Add → category scroll → Items title+Add → items scroll
+- Ctrl+Z / Ctrl+Y undo & redo in assessment configuration
+- Passage images resizable by dragging the bottom-right corner
+- MC option boxes resizable; resize affordance at the edge
+- Save validation scrolls to & blinks incomplete required fields
+- Table fill copy/paste/right-click never flagged as integrity issues
+- Wordbox drag answers nested correctly under child + parent ids
+- Live dashboard: View all screens / Specific student / Screens off
+- History answers matched by question id only (no cross-type leakage); MC text not [object Object]; table blanks as comma-separated row
+- Dark mode: darker page background, darker content cards
+- Screenshare stopped on assessment end (Monitor.stop tracks)
+- Student result PDF: professional colored report, no Q1/Q2 labels, section grouping
+- Retro: smaller wordbank/option text to prevent overflow
+- Section intro: full 100vh, Ready button centered at bottom
+
+## v1.5.39
+- Mock assessments are real student practice (not instructor test mode) and appear in Mock History
+- Create mock exam moved to Mock History (modal with filters/checkboxes)
+- Student results: Accuracy in stats, equal columns, collapsible sections; Match/Passage/Table full-width special blocks
+- Result PDF: colored professional layout with blue headers (template-style)
+- Global loading blur overlay
+- Retro is a full theme option for students (Settings + toggle)
+- Section instructions & buttons centered; categorize 100vh full-width columns; progress counter removed
+- No floating message on mock assessments
+- Retro-only: wordbank fit, larger centered MC with glow selection, answer-required modal spacing, open-ended note in default gray font, buttons use retro font, app chrome uses Segoe UI
+- Answer-required copy: all blanks/questions should be answered before continuing
+- Open-ended character counter updates live
+- About: centered, themed card, no Close button, contact Ma'am Pau email
+- Categorize config: single-column rows (title+button then content scroll)
+- Dark mode page background matches menu
+- Live dashboard no longer re-shows the last student message on open
+- Publish/reopen stamps runId; student sessions carry runId + teacherId
+- New Sessions page for instructors (past runs, participants, integrity popup, session detail)
+
+## v1.5.40
+- Student join: default Segoe UI for code hint; tri-state Light/Dark/Retro theme switch; student default Light
+- Create mock exam modal restored and working
+- Student result PDF: navy header on every page, orange %, blue section bars (peer-eval style)
+- Removed "Integrity -" prefix from subtitles
+- About: Consolas orange email (not a link); removed bottom "About" label; About button centered
+- Instructor settings: classic Light/Dark switch again; students keep tri-state
+- Faster assessment/results loading (reuse session scores; limited hardest-Q scan)
+- Instructor Results null-exam guard + loading overlay
+- Section intro fonts ~3×; Ready centered; MC centered all themes; no MC resize; fill blanks ~3× font
+- Test-as-student: no submit loop / no sign-out reload on idle end
+- Categorize Remove question no longer overlaps items
+- Passage image Wrap Text (MS Word-style options)
+- Student results: accuracy on same stats row; no per-row Question/Response/Correct labels; Match SVG lines; Table fill visual like assessment; Passage at bottom special section
+
+## v1.5.41
+- Integrity: duration-based episodes (mm:ss) instead of duplicate Violation #N; new episode when leave→return→leave again
+- Favicon: LVCC logo on all tabs
+- Loading blur on login, join, mock create, PDF export
+- Results: match/table only in special full-width blocks (not redundant grid rows); match lines connect dots; table visual improved
+- PDF: html2pdf A4 template — full-width navy header, score card, blue section bars, white cards, green correct answers
+- Mock: list modal closes before name/time prompts; loading; no Screen Monitoring cue; timer endsAt fixed; results after submit; recorded in Mock History
+- Match col A: text right-aligned, bullet toward center; categorize centered; retro stronger glow; categorize 100vh
+- Reopen refreshes My Assessments cards live
+- Screen-share: clearer message if prompt blocked
+- Retro login 100vh; integrity rules centered
+- Second monitor during join grace not logged as integrity issue
+- Instructor→student message no longer reappears every question
+- Live dashboard: broader active-session filter so student cards show
+- Table fill copy/paste allowed (target-aware); other pastes log clipboard snippet
+- After submit (assessment + mock) opens result detail view
+
+## v1.5.42
+- Sessions page restored and working
+- Wordbox blanks: rounded rectangle (not oval); font matches sentence; bank chips responsive flex
+- Timer pauses during section instructions; continues without reset/blink per question
+- Categorize: per-column scroll, 100vh fit, drag items back to options bank
+- Passage left/right equal height with independent scroll
+- Match take layout fixed: labels outside, bullets toward center for connecting lines
+- Retro: stronger cyan glow on selected options; history fonts scaled for desktop fit
+- Join assessment: loading blur dismissed before integrity gate (no more stuck overlay)
+- Mock View/Retake: reliable Firestore persist of questionsSnapshot; retake builds new session
+- PDF export always clears "Generating PDF…" overlay; direct download preferred
+- Logged-in refresh routes to Dashboard (not join screen)
+- History stats use stored total/correct/incorrect/unattempted/accuracy with score fallbacks
+
+## v1.5.43
+- Live window open chip moved below start/end dates (Manage/Monitor/Share stay aligned)
+- Question progress spacing lowered so it is not cut off
+- Join/screenshare/login loop: multi-monitor watch delayed until after grace; no integrity lock on first join for 2nd monitor
+- Categorize + wordbank: drag items back to options/bank pool
+- Wordbank chips: responsive flex, adaptive width; sentence line-height so blanks do not intersect
+- Categorize: 100vh layout with per-column / options scroll
+- Categorize total points auto = items × points per item
+- CRITICAL: Regular.gradeAnswers implemented — correct answers score correctly
+- PDF: direct download preferred; loading overlay always cleared
+- Match take: bullets toward center, labels outside
+- Refresh while logged in → dashboard (LOCAL persistence)
+- Sessions: as-you-type search; per-student integrity view + PDF export; session integrity search
+
+## v1.5.44
+- Live dashboard: resilient session load (snapshot + 8s poll + sessions discovered from integrity events)
+- Live cards show for active sessions on newly published and reopened assessments
+- Monitor.stop clears multi-monitor interval, stops all screen-share tracks, and blocks further integrity writes
+- Submit/end assessment always stops monitoring and screen share
+
+## v1.5.45
+- FIXED: View issues on session detail — full integrity table with thumbnails + direct PDF export (jsPDF)
+- FIXED: Live dashboard sessions — immediate get + snapshot + 5s poll (simple applySessions, no broken merge)
+- FIXED: PDF export uses jsPDF only — direct download, no print dialog / new tab; loading overlay always cleared
+
+## v1.5.46
+- CRITICAL: Live dashboard cards crashed on Regular.answersPreview (undefined) — counts updated but grid stayed empty; fixed with safe preview + fallback card render
+- Match take UI rebuilt: two clean columns, labels with center-facing bullets, readable cards (not scattered dots)
+
+## v1.5.47
+- Live grid: 2 cards per row; cards no longer clip action buttons / content
+- Match take: forced two-column card layout (label+bullet)
+- History: removed empty Match/Table collapsible sections ("No items")
+- History table fill: correct cell keys (data-row index with hyphen) so student answers and values show
+- History passage: load passage HTML from exam sections or questionsSnapshot
+- PDF: timeout on library load + aggressive clear of Generating PDF overlay
+- Auth: LOCAL persistence so refresh keeps session and opens dashboard
+
+## v1.5.48
+- Removed "Signing in…" overlay on page refresh / session restore (only on explicit Google sign-in)
+- PDF: local-only jsPDF load with timeout; force-remove loading overlay so it cannot stick
+- Removed question progress counter (e.g. 7/11) from assessment question banner
+- Close button only when live; closed assessments show Reopen only
+- Match take: exact reference layout — text + center-facing dots + blue connecting lines (no cards)
+
+## v1.5.49
+- Retro: tighter condensed pixel font; neon purple / pink / yellow accents; About email neon purple + Consolas
+- PDF: more reliable jsPDF detection + CDN fallback
+- Grading: answered essays no longer counted as unattempted (was the false +1)
+- Mock history: Delete with title confirmation
+- Table fill results: numbered blanks <(1) answer>; correct answers listed per line; dark/retro readable colors
+- Match: more vertical spacing for many items; mobile uses dropdown pairing
+- Mobile: collapsible calculator on table fill; Answer-required modal no longer shows mirrored/duplicate background
+- Performance: deferred Monaco/html2canvas; non-blocking fonts; splash hidden as soon as JS runs
+- Grids: table headers/skeleton structure shown immediately; only row data waits on network
+
+## v1.5.50
+- CRITICAL: Fixed stuck blur/overlay blocking Test as student, live assessment, and mock (modal-open + loading no longer leave pointer-events:none)
+- Clear all overlays before starting any assessment
+- Default font: Google Sans / Inter (retro keeps pixel font)
+- Retro: neon cyan/blue lines restored; About modal uses readable dark-style fonts
+- Dark theme: page + menu + content seamless (#020C12 / #031926)
+- PDF export: arrows as "->" (no corrupted glyphs); categorize/match one line per item
+- Integrity screenshot: full 100svh lightbox, no frame/title/Close; click outside to dismiss; theme-colored glow
+
+## v1.5.51
+- Google Sans/Inter default on login, brand, modals, chrome
+- Categorize: centered 2x titles; 2x images; images retained on drag
+- Match: tighter vertical, 3x horizontal gap; left-aligned A text; vertical bullets
+- Fill-in-blank take font ~3x
+- About email: joanepauline.maunes@laverdad.edu.ph
+- Live thumbs: 5s when focused on one student, 15s for all
+- Nav icons: graph (Dashboard), books (Assessments)
+- Mock history skeleton load like Assessments
+- Dark seamless content; retro chrome Google Sans, titles pixel; result boxes cyan / inner purple
+- Wordbox centered; dark MC selection black border; larger choice text
+
+## v1.5.52
+- Retro: pixel font ONLY on exam take UI + page titles; sidebar/menu/history/tables/modals/login use Google Sans at dark-theme sizes
+- History + PDF: categorize and match expanded to one row/line per item (no paragraph blob)
+- pdfSafeText no longer collapses newlines (was turning multi-line answers into one sentence)
+- PDF score card includes Total / Correct / Incorrect / Unattempted / Accuracy line
+
+## v1.5.53
+- MC selected: thick white border; larger question/choice fonts; fill blanks 2x wider
+- Match: much wider gap between column A and B
+- Dark: section cards white border; history/session grids seamless with menu
+- Mock history actions right-aligned; assessment filters right-aligned
+- Brand "LVCC Assessment Portal" same weight/size as nav labels; collapsed tooltips
+- Retro: pixel fonts restored; readable sizes; larger page titles
+- Passage content shown in history special block; PDF prefers on-screen capture (match/passage/table) with structured fallback and section page-break
+
+## v1.5.54
+- Table fill result/PDF: no <> around answers; (n) answer format
+- Require correct answers on blanks/keys before save/publish
+- Mock history actions single row, right-aligned
+- Sidebar width restored; themed collapse tooltips
+- Undo/redo debounced (one logical action); MC options update live without wipe
+- Categorize: live category dropdown labels; total points editable; Add Item above Remove; calc ( ) + 2-decimal round + Error
+- Autosave draft before idle session end when in builder
+
+## v1.5.55
+- Test as student: optional randomization; result page with scoring (not saved)
+- Undo: no history on keystrokes (structural only)
+- True/False False option dark pink (#c2185b)
+- Categorize take: centered titles, larger option chips; duplicate Remove fixed
+- Section intro larger with padding
+- Mock history column layout + score/time durationMs on submit
+- Table fill config grid borders; merged subheader row (colspan)
+
+## v1.5.56
+- Login subtitle normal (not italic)
+- Mock History: Actions column separate from Time taken
+- Test as student: result page (showStudentAttemptFromObject fixed)
+- TF False dark pink in take UI (#c2185b !important)
+- Section intro much larger box + larger type
+- Submit Answer 2× size, lower placement
+- Categorize titles centered; light option borders; items shuffle when randomized
+- Table fill: column subheader + blank merged row; taller cells; resize
+
+## v1.5.57
+- Screen-share domain follows the site origin (github.io vs vercel.app)
+- Table fill: top blank merged row, row color picker, column width (px)
+- Section intro ~80svh, larger instruction fonts
+- Case-insensitive grading for table fill + open-ended when key is set
+- Instructor Review/revise scores on student attempt
+- False = MC pink #f43f5e; softer MC yellow #c9a227
+- Test section button per section (100svh overlay + results)
+- Fixed Test-as-student randomization (Regular.randomizeExam)
+
+## v1.5.58
+- Test section button fixed (openSectionTestPreview + overlay #app redirect)
+- Section instruction ~2× wider
+- Table fill: drag-resize columns/rows (no px field); Ctrl+B bold
+- Multiple table-fill in same section share one scrollable page; line breaks preserved
+
+## v1.5.59
+- Integrity: screen-recording (PrintScreen, Win+Shift+S, Win+G, Game Bar, macOS capture, stream mute/end)
+- Table fill: fixed shared calculator + clipboard; table panel scrolls at 100svh; . and 0 keys swapped
+- Submit Answer ~3× size at bottom (aligned with Ready)
+- Instruction line breaks preserved on take UI
+- Table fill contrast: merged/instruction text black on light cells in all themes
+
+## v1.5.60
+- Calculator: thousands separators (1,234,567)
+- Submit button text centered
+- Table fill: remove first data row; per-row delete; Ctrl+L/R/E/J alignment (saved + student view)
+- Column width drag handle on header
+
+## v1.5.61
+- Table fill: copy / paste / right-click never logged as integrity (expanded selectors + page flag)
+- Brief focus loss (Google Meet popup/move) not logged; only sustained hidden blur
+- Instructor Live: "Stop integrity log" pauses all integrity writes for the exam (students sync via snapshot)
+
+## v1.5.62
+- Fix Stop integrity log: students now subscribe + poll exam/session pause flag (was never started)
+- Instructor updates all sessions for the exam; global window flag blocks recordViolation
+
+## v1.5.63
+- Mobile assessment: stage scrolls when choices/answers do not fit; MC stacked full-width; sticky Submit; table-fill/passage/categorize scroll regions
+
+## v1.5.64
+- Mobile: never log resize integrity events
+- Calculator: fix sticky zero; table blanks accept text (not numbers-only)
+- F5 progress: sessionStorage backup of answers + question index
+- Live: remove Specific student; device filter; Submitted panel with Continue/Retake; filtered students only upload screens; grid scrolls in 100svh
+- Messaging: multiline textareas; larger maximize screenshots
+
+## v1.5.65
+- Complete the Code (replaces Drag and drop): monospace editor, Make blank, Python/Java, basic syntax check
+- Table fill: merged row color; scroll to new row/column
+- Large assessments: externalize images to Storage when near 1MB Firestore limit
+- Students can request return via code unless instructor force-ended
+- Result hide helper for <20%; wrong answer styling (red)
+
+## v1.5.66
+- Email templates (quota/failed/unattempted/instructor retake + continue); queue to Firestore `mail` with instructor as from
+- Portal base URL helper (defaults to lvccassessmentportal.vercel.app; override localStorage lvcc_portal_url)
+
+## v1.5.67
+- Live dashboard: message history panel (latest first, unread red dot, full thread popup 100svh); chatHistory on sessions; hide threads 24h after session end
+- Student: review overview before final submit; click question to edit
+
+## Ops note
+- Trigger Email: collection must be `mail` (not an email address). FROM = instructor email.
+
+## v1.5.68
+- Reopen: New Session / Reopen Previous / Cancel; Reopen Previous student picker works
+- Complete the Code: single Remove question
+- Live right panel 100svh: Integrity on top, Messages below
+- Results: View summary, Re-evaluate (editable points), Export PDF; full-width grid
+- Mobile: MC/long text wraps, no cut-off; complete-code readable; categorize images 80%
+- Match: wider columns; points all vs per match
+- Section test: no fullscreen; table fill scroll to new row
+
+## v1.5.69
+- Live: single Back at top; right panel full height; no page scroll
+- Builder: preserve focus/caret on re-render (fixes per-character click)
+- Match: live answer-key labels as Column A/B typed (no full re-render)
+- Results: search-as-you-type; action buttons one row; View summary / Re-evaluate Points / Export PDF
+- Re-evaluate: Points field per question; sticky Save inside main content
+- Wrong responses red on results
+
+## v1.5.70
+- My Assessments filter: updates list only (no focus loss per keystroke)
+- Match: wider columns, restored gap between A/B nodes, less cramped scroll
+- Builder: sticky Undo/Redo/Cancel/Save/Publish bar
+- Retake: fresh / editable previous answers / lock previous answers
+
+## v1.5.71
+- Match student view: board 90vw wide; large center gap between Column A and B nodes; text uses full column width; no cramped column scrollbars
+
+## v1.5.72
+- Dark theme: near-black blue backgrounds
+- Sticky builder bar fully opaque (no content showing through on scroll)
+- Match assessment: ~40% less vertical spacing between rows
+- Match config: single control per row (removed double bullets)
+
+## v1.5.73
+- Table fill config: scroll/focus to latest added row or column
+- Match take: +20% row spacing, vertical centering
+- Re-evaluate: Points + Comment columns on each question row
+- History + PDF: wrong student responses in red; table spacing to reduce overlap/clipping
+- Live: Blast message to all active students
+- Live edit: contentVersion listener soft-refreshes student exam without losing answers
+- Instructor View summary / Re-evaluate: no Back button
+- Browser Back/Forward navigation for main views
+- Reopen Previous: stats grid (name, total, correct, wrong, unattempted, accuracy, View Summary)
+- Email selected + Test Email + optional email before Allow continue
+
+## v1.5.74
+- Table fill config: reliable scroll/focus to NEWEST row/column after add
+- Save / Save as Draft stays on configuration page (no navigate away)
+- Match Column A: labels pack next to bullets (right-aligned to nodes)
+- Re-evaluate: Points+Comment on each table-fill blank cell
+- Results: merged / subheader / top-merged rows restored in table fill display
+- PDF: keep question+response+correct together across page breaks; less clipping
+- Reopen View Summary: full-screen overlay above list (no content under blur)
+- Test Email: clearer error + rules sample; firestore.rules includes match /mail/{id}
+
+## v1.5.75
+- Match: auto total points = items × points per match when adding/removing Column A
+- PDF: long text wraps within page margins; table starts below full instruction (no cover)
+- Email: greets student first name only; LVCC signature block (Thanks be to God / Sincerely / title / motto / college / disclaimer)
+- Table fill config: scroll targets newest row via main-content scroll offset (not first row)
+
+## v1.5.76
+- System-limit email: Continue wording + unattempted count; LVCC logo in header; LVCC/DPS logos + Cinzel college name in signature; Georgia 11pt body
+- Reopen Previous: Allow continue → pick template → email + continue (removed separate Email selected)
+- Match/Categorize scoring: 1 point per correct pair/item by default (pointsMode each); section test shows point score
+- Submit stores score/maxScore from gradeAnswers (not 1-per-question only)
+- PDF: gray dividers between questions; wider wrap (175pt); table cells less truncated
+- Sticky bar no longer covers "Question sections" title
+- Re-evaluate: edit correct answer fields
+- Passage take: fallback to nested questions + passageHtml
+- MC/TF dynamic font size (short vs long text)
+
+## v1.5.77
+- Firestore 1MB is a hard per-document limit (Blaze does not raise it). Large assessments auto-upload images to Firebase Storage then save the doc with https URLs.
+- Match/Categorize: scoring defaults to 1 point per correct pair/item; total normalized on save; section test uses gradeAnswers points
+- Passage: questions linked to tabs (show/hide on tab switch in config + student); points on each nested question; DOM sync before every render/save to stop content loss
+- Add Question (passage) and table rows scroll to the new item
+- Duplicate button on all question types
+
+## v1.5.78
+- Mobile students must use Google Chrome only (Safari / Samsung Internet / Firefox / Edge mobile blocked before exam start)
+- Desktop still allows Chrome or Edge
+- Keep existing Storage rules (image/*, 5MB, assessments/{examId}/**) — no change required
+
+## v1.5.79
+- Fix: externalizeAssessmentImages was missing (Could not save / is not a function) — method restored for Storage image offload
+- Assessment config: focusLastAddedBuilderItem — after adding row/option (table, match, MC, categorize, passage, wordbox) auto-scrolls and focuses first editable field
+
+## v1.5.80
+- CRITICAL scoring: Categorize/Match default to points-per-item (6 items → 6 pts; 8 matches → 8 pts). Section test Score uses actual points, not item count 1/1
+- Categorize student view: show images from Firebase Storage URLs (not only data:image)
+- Passage tabs: never overwrite tab 1 when editing tab 3 — write to active tab only; sync DOM before every re-render
+- Auto-update categorize total points when adding items or changing points-per-item
+- normalizeQuestionPoints on save so configured totals stick
+- More aggressive image compress + externalize at 400KB to fix 1MB save failures
+
+## v1.5.81
+- Stats Total always equals max score (points): categorize 6 items → Total 6, Score 6/6
+- Section test cards use points (Total/Correct match Score line)
+- computeAttemptStats expands categorize/match/fill/table sub-items for Correct/Incorrect/Unattempted
+
+## v1.5.82
+- Categorize images 85–90% width of options column
+- Window resize no longer logged as integrity issue
+- Live dashboard: Lock / Unlock student assessment + optional message
+- Passage: add question stays on active tab and focuses the new question (not tab 1 Q1)
+- Passage images: drag corner to resize restored
+- MC/TF dynamic font sizes apply to .gq-option student buttons (short larger, long smaller)
+- PDF: slightly wider text wrap / less cell clipping
+- Total stats continue to follow max score points
+
+## v1.5.83
+- CRITICAL: Categorize (and all) images no longer wiped on Save as Draft / Publish
+- Root cause: compress step replaced failed/large data:image with empty string
+- Fix: upload data:images to Firebase Storage first; compress never blanks images; strip phase removed
+- Soft-resize categorize uploads on pick (640px) for reliability
+
+## v1.5.84
+- Live dashboard: filter "Locked (need admit)" to show only locked students
+- Live dashboard: locked count chip + Mass unlock (batch admit all locked)
+- Locked badge on student cards; single Unlock still available
+
+## v1.5.85
+- Live messages stream: refresh on every session update (student messages now appear in right panel)
+- Student chat writes chatHistory + msgReadByInstructor so stream and unread dots work
+- Instructor reply uses unique instructorChatPing; student gets popup notification reliably
+- Live right panel stretched to full content height under the page title
+- Live screens refresh every 3 seconds when screens are on
+
+## v1.5.86
+- Live dashboard: Refresh button per student — forces their assessment screen to reload
+- Student progress preserved (answers flushed to sessionStorage + Firestore before reload, same as F5)
+- First snapshot after open does not re-trigger an old refresh signal
+
+## v1.5.87
+- Email template picker shows readable preview (no raw function text)
+- Email header: logo beside centered title + tagline with spacing
+- Live messages: no interrupt popup; stream + unread red dot; full conversation on click
+- Chat reply stays open; does not wipe instructor compose on new messages
+- Student progress: every answer saved to sessionStorage + Firestore (F5 / force refresh keeps progress)
+- Last question → View Overview (edit answers) then Submit with loading blur
+- Submit errors keep student on page so they can retry; answers remain saved
+- Retake with locked previous answers: answered items locked; jump to unanswered
+
+## v1.5.88
+- Email templates drive continue/retake behavior:
+  - quota_retake / unattempted_retake → unanswered only (previous answers locked)
+  - continue_progress → resume, skip answered, overview before final submit
+  - failed_retake / instructor_retake → full fresh attempt (all questions, new score)
+- examRetakes stores templateId + mode flags; applyRetakeOptions enforces them on join
+
+## v1.5.89
+- Reopen (new or previous, even 1 student): always show publish schedule (start/end/time limit/randomize) and set assessment Live
+- Reopen Previous student picker: search box + filters ≥5 unattempted and ≥5 wrong
+- Sessions detail: Export all results (ZIP of per-student PDFs) and Export all integrity (ZIP of per-student PDFs)
+
+## v1.5.90
+- Live dashboard treats reopened/allowContinue sessions as active (status continuing, screens + integrity resume)
+- Reopen batch clears submitted flags; student re-entry restarts Monitor
+- Live: "Reopen for other student" adds more students to current reopened session
+- Blast message includes continuing sessions + instructorChatPing
+- Faster chat: critical message fields write first; history append async; live poll 2s
+
+## v1.5.91
+- Student floating message opens full session conversation with instructor (live thread + send)
+- Settings: Open buttons & links in a new tab
+- Courses & subjects page: add course/subject, enroll students by email (Firestore: courses, subjects, enrollments)
+- Reopened sessions: per-student time limit from each student's start/re-entry (durationMinutes), capped by window end
+
+## v1.5.92
+- Timer: time limit (minutes) is per-student from start/continue → "Time's up!" auto-submit; assessment end datetime is window close → "Assessment window closed". No longer shows instructor "Assessment Ended" for normal time limit.
+- Courses: add/edit/delete course & subject; enroll via checkbox grid (filter + optional extra emails)
+
+## v1.5.93
+- Reopen Previous: "Allow continue & Skip Email" — enables selected students without sending email (still runs schedule + live reopen)
+
+## v1.5.94
+- Fix schedule: End date/time is the assessment window; Time limit (minutes) is per-student only (no longer overwrites End to start+60m)
+- Reopen student grid: use saved session score/stats when live compute is empty; fix latest-attempt timestamp compare
+
+## v1.5.95
+- Live dashboard: no page scroll; middle grid scrolls to show all student cards; right panel full height (integrity + messages each scroll)
+- Message popup: student/instructor avatars beside name; thread oldest → newest
+
+## v1.5.98
+- Passage open-ended / essay: auto-score when correct or suggested answer is configured; instructor can still re-evaluate points
+- Results: **Re-evaluate all scores** re-grades every attempt from current assessment answer keys
+- Single student re-evaluate save refreshes results statistics at top of summary
+- Export PDF: fixed multi-page image split so questions are not cut by the dark header bar; structured PDF keeps blocks off the header
+
+## v1.5.99
+- Results: **Re-evaluate all scores** beside Export Excel (inject fallback if missing); stats refresh after bulk re-eval
+- Removed **Top performing students** from results statistics
+- Match summary + PDF: one Match block per question (not repeated per pair)
+- Export PDF prefers structured layout (Question / Your response / Correct answer); passage & instruction line breaks preserved
+
+## v1.5.100
+- Passage / open-ended: Correct answer column shows the configured key (not "Evaluated by instructor")
+- Auto-grade open-ended when a key is set; multi-line keys match if every line appears in the student answer
+- Re-evaluate all scores: recalculates from current exam keys and refreshes Results stats (session score preferred)
+- Removed Top performing students tile from Results
