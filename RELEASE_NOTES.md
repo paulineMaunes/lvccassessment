@@ -821,3 +821,8 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Re-evaluate Save: writes score + correct maxScore to sessions AND grades (was writing stale max)
 - Results grid: always uses current exam max points (fixes 62/58 → 62/65); percent capped at 100%
 - After Save, navigates to Results so scores refresh immediately
+
+## v1.5.105
+- Categorize grading: match category by id OR name (correct items no longer score 0)
+- Re-evaluate: per-item categorize points default from text match / item details
+- Re-evaluate all scores: max points from current exam config (65, not 58)
