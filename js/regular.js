@@ -1775,14 +1775,20 @@ const Regular = {
     if (!s) return false;
     const list = [];
     if (Array.isArray(correct)) correct.forEach(c => list.push(c));
-    else if (correct != null && correct !== '') list.push(correct);
+    else if (correct != null && correct !== '') {
+      list.push(correct);
+      // Each non-empty line of a multiline key is also an accepted exact alternative
+      String(correct).split(/\r?\n+/).forEach(line => {
+        if (String(line).trim()) list.push(line);
+      });
+    }
     (alternatives || []).forEach(a => {
       if (Array.isArray(a)) a.forEach(x => list.push(x));
-      else list.push(a);
+      else if (a != null && a !== '') list.push(a);
     });
     return list.some(c => {
       const n = this.normAns(c);
-      return n && (n === s || n.replace(/\s+/g, ' ') === s.replace(/\s+/g, ' '));
+      return n && n === s;
     });
   },
 
@@ -1836,14 +1842,23 @@ const Regular = {
       (Array.isArray(resp) && !resp.length) ||
       (typeof resp === 'object' && !Array.isArray(resp) && !Object.keys(resp).length);
     if (q.type === 'essay' || q.type === 'open' || q.type === 'openended' || q.type === 'open_ended') {
-      // Auto-grade when correct / suggested answer or alternatives exist (case-insensitive)
+      // Auto-grade when correct / suggested / rubric or alternatives exist
       const alts = q.alternatives || q.alternateAnswers || q.alternates || [];
-      const hasKey = (q.correct != null && String(q.correct).trim() !== '')
-        || (q.suggestedAnswer != null && String(q.suggestedAnswer).trim() !== '')
-        || (Array.isArray(alts) && alts.some(a => a != null && String(a).trim() !== ''));
+      let key = '';
+      if (q.correct != null && String(q.correct).trim() !== '') key = q.correct;
+      else if (q.suggestedAnswer != null && String(q.suggestedAnswer).trim() !== '') key = q.suggestedAnswer;
+      else if (q.rubric != null && String(q.rubric).trim() !== '') key = q.rubric;
+      const hasKey = (key !== '') || (Array.isArray(alts) && alts.some(a => a != null && String(a).trim() !== ''));
       if (!hasKey) return { earned: 0, max: pts, ok: false, skipped: true, manual: true };
-      const key = (q.correct != null && String(q.correct).trim() !== '') ? q.correct : q.suggestedAnswer;
-      const ok = this.matchesCorrect(resp, key, alts);
+      // Multi-line keys: every non-empty line of the key must appear in the student answer, OR full match
+      let ok = this.matchesCorrect(resp, key, alts);
+      if (!ok && key) {
+        const studentNorm = this.normAns(resp);
+        const lines = String(key).split(/\r?\n+/).map(l => this.normAns(l)).filter(Boolean);
+        if (lines.length > 1 && studentNorm) {
+          ok = lines.every(line => studentNorm.includes(line));
+        }
+      }
       return { earned: ok ? pts : 0, max: pts, ok, autoGraded: true, manual: true };
     }
     if (empty) return { earned: 0, max: pts, ok: false };
