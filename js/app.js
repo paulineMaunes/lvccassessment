@@ -1,9 +1,66 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.103
+ * v1.5.104
  */
 
 const App = {
+
+
+  computeExamMaxPoints(exam) {
+    if (!exam) return 0;
+    let questions = [];
+    try {
+      if (window.Regular && Regular.flattenQuestions) questions = Regular.flattenQuestions(exam) || [];
+    } catch (_) {}
+    if (!questions.length && Array.isArray(exam.sections)) {
+      questions = exam.sections.flatMap(s => s.questions || []);
+    }
+    if (!questions.length && Array.isArray(exam.questions)) questions = exam.questions;
+    let sum = 0;
+    const add = (q) => {
+      if (!q) return;
+      if ((q.type === 'passage' || q.isPassageSet) && Array.isArray(q.questions)) {
+        q.questions.forEach(add); return;
+      }
+      if (q.type === 'wordbox' && Array.isArray(q.questions) && q.questions.length) {
+        q.questions.forEach(kq => { sum += Number(kq.points) || 1; }); return;
+      }
+      if (q.type === 'match') {
+        const n = Math.max(1, (q.left || q.columnA || []).length || 0);
+        if (q.pointsMode === 'each' || (q.pointsPerItem != null && q.pointsPerItem !== '')) {
+          sum += n * (Number(q.pointsPerItem) || Number(q.points) || 1);
+        } else sum += Number(q.points) > 0 ? Number(q.points) : n;
+        return;
+      }
+      if (q.type === 'categorize' && Array.isArray(q.items) && q.items.length) {
+        const per = Number(q.pointsPerItem);
+        if (q.pointsMode === 'each' || (per != null && !isNaN(per) && per > 0)) {
+          sum += q.items.length * (per > 0 ? per : 1);
+        } else sum += Number(q.points) > 0 ? Number(q.points) : q.items.length;
+        return;
+      }
+      if (q.type === 'table' || q.type === 'tablefill') {
+        const cells = q.cells || {};
+        const blanks = Object.keys(cells).filter(k => cells[k] && cells[k].blank);
+        if (q.pointsMode === 'each' || q.pointsPerItem != null) {
+          sum += Math.max(1, blanks.length) * (Number(q.pointsPerItem) || 1);
+        } else sum += Number(q.points) > 0 ? Number(q.points) : Math.max(1, blanks.length || 1);
+        return;
+      }
+      if (q.type === 'fill' || q.type === 'fillblank') {
+        const blanks = q.blanks || (q.parts || []).filter(p => p && p.kind === 'blank');
+        if (q.pointsMode === 'each' && blanks.length) {
+          sum += blanks.length * (Number(q.pointsPerItem) || 1);
+        } else sum += Number(q.points) > 0 ? Number(q.points) : Math.max(1, blanks.length || 1);
+        return;
+      }
+      sum += Number(q.points) > 0 ? Number(q.points) : 1;
+    };
+    questions.forEach(add);
+    const em = Number(exam.maxScore);
+    if (em > sum) return em;
+    return sum;
+  },
 
   lastNameKey(name) {
     const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
@@ -645,7 +702,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.103</div>
+          <div class="app-version">Build v1.5.104</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -812,7 +869,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.103</div>
+              <div class="app-version">v1.5.104</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -10216,22 +10273,46 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
           try {
             const points = {};
             let sum = 0;
-            main.querySelectorAll('.reeval-point').forEach(inp => {
-              const p = Number(inp.value) || 0;
-              sum += p;
-              if (inp.dataset.qid) points[inp.dataset.qid] = p;
+            let maxFromInputs = 0;
+            const pointEls = main.querySelectorAll('.reeval-point');
+            if (!pointEls.length) {
+              await UI.alert('No score fields found. Re-open Re-evaluate and try again.', 'Error');
+              return;
+            }
+            pointEls.forEach(inp => {
+              const p = Number(inp.value);
+              const earned = isNaN(p) ? 0 : p;
+              sum += earned;
+              maxFromInputs += Number(inp.dataset.max) || 0;
+              if (inp.dataset.qid) points[inp.dataset.qid] = earned;
             });
+            sum = Math.round(sum * 10) / 10;
             const totEl = root.querySelector('.reeval-total');
-            if (totEl) sum = Number(totEl.value) || sum;
-            const sess = await window.db.collection('sessions').doc(sessionId).get();
-            const max = Number((sess.data() || {}).maxScore) || sum || 100;
-            const percent = max > 0 ? Math.round((sum / max) * 1000) / 10 : 0;
+            if (totEl && totEl.value !== '') sum = Number(totEl.value) || sum;
             const comments = {};
             main.querySelectorAll('.reeval-comment').forEach(inp => {
               if (inp.dataset.qid && inp.value) comments[inp.dataset.qid] = inp.value;
             });
-            const maxUse = Number(window._reevalGradedMax) || max;
-            const percentFinal = maxUse > 0 ? Math.round((sum / maxUse) * 1000) / 10 : percent;
+            // Resolve max from exam config (preferred), graded max, inputs, session
+            let maxUse = Number(window._reevalGradedMax) || 0;
+            try {
+              if (examId) {
+                const exSnap = await window.db.collection('exams').doc(examId).get();
+                if (exSnap.exists && App.computeExamMaxPoints) {
+                  const cfgMax = App.computeExamMaxPoints(exSnap.data());
+                  if (cfgMax > maxUse) maxUse = cfgMax;
+                }
+              }
+            } catch (_) {}
+            if (maxFromInputs > maxUse) maxUse = maxFromInputs;
+            try {
+              const sess = await window.db.collection('sessions').doc(sessionId).get();
+              const sm = Number((sess.data() || {}).maxScore) || 0;
+              if (sm > maxUse) maxUse = sm;
+            } catch (_) {}
+            if (!maxUse) maxUse = sum || 100;
+            maxUse = Math.round(maxUse * 10) / 10;
+            const percentFinal = maxUse > 0 ? Math.min(100, Math.round((sum / maxUse) * 1000) / 10) : 0;
             await window.db.collection('sessions').doc(sessionId).update({
               score: sum,
               maxScore: maxUse,
@@ -10244,11 +10325,18 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
             });
             try {
               await window.db.collection('grades').doc(sessionId).set({
-                sessionId, examId, score: sum, maxScore: max, percent,
+                sessionId,
+                examId,
+                score: sum,
+                maxScore: maxUse,
+                percent: percentFinal,
+                accuracy: percentFinal,
                 itemPoints: points,
-                updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                itemComments: comments,
+                updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                reEvaluatedAt: firebase.firestore.FieldValue.serverTimestamp()
               }, { merge: true });
-            } catch (_) {}
+            } catch (ge) { console.warn('grades write', ge); }
             // Update top attempt-stats on this page immediately
             try {
               let correct = 0, incorrect = 0, totalItems = 0;
@@ -10283,11 +10371,9 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
               badge.textContent = 'Score: ' + sum + ' / ' + maxUse + ' (' + percentFinal + '%)';
             } catch (_) {}
             await UI.alert('Scores saved: ' + sum + ' / ' + maxUse + ' (' + percentFinal + '%). Student will see the updated result.', 'Saved');
-            // Reflect on results statistics if results page is open in this tab
+            // Always return to Results so the grid shows the saved score
             try {
-              if (examId && document.getElementById('results-stats')) {
-                await App.showExamResults(examId);
-              }
+              if (examId) await App.showExamResults(examId);
             } catch (_) {}
           } catch (err) {
             await UI.alert(err.message || String(err), 'Error');
@@ -10462,16 +10548,33 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
       .filter(s => !s.isMock && String(s.status) !== 'superseded' && !String(s.id).startsWith('test_'));
     const grades = await Exam.listGrades(examId);
     const gradeMap = Object.fromEntries(grades.map(g => [g.sessionId, g]));
-    // Prefer live session scores (especially after Re-evaluate all)
+    // Prefer live session scores (especially after Re-evaluate)
+    // Always normalize maxScore to current exam config so we never show 62/58 when max is 65
+    const examMaxPts = (this.computeExamMaxPoints && this.computeExamMaxPoints(exam)) || 0;
     sessions.forEach(s => {
-      if (s.score == null && s.maxScore == null) return;
+      if (s.score == null && s.maxScore == null && !gradeMap[s.id]) return;
       const prev = gradeMap[s.id] || {};
+      let score = s.score != null ? Number(s.score) : (prev.score != null ? Number(prev.score) : null);
+      let maxScore = examMaxPts > 0 ? examMaxPts : (s.maxScore != null ? Number(s.maxScore) : Number(prev.maxScore) || 0);
+      // If session max is higher than config (rare), keep higher
+      if (s.maxScore != null && Number(s.maxScore) > maxScore) maxScore = Number(s.maxScore);
+      if (prev.maxScore != null && Number(prev.maxScore) > maxScore) maxScore = Number(prev.maxScore);
+      let percent = null;
+      if (score != null && maxScore > 0) {
+        percent = Math.min(100, Math.round((score / maxScore) * 1000) / 10);
+      } else if (s.percent != null) {
+        percent = Math.min(100, Number(s.percent));
+      } else if (s.accuracy != null) {
+        percent = Math.min(100, Number(s.accuracy));
+      } else if (prev.percent != null) {
+        percent = Math.min(100, Number(prev.percent));
+      }
       gradeMap[s.id] = {
         ...prev,
         sessionId: s.id,
-        score: s.score != null ? s.score : prev.score,
-        maxScore: s.maxScore != null ? s.maxScore : prev.maxScore,
-        percent: s.percent != null ? s.percent : (s.accuracy != null ? s.accuracy : prev.percent)
+        score,
+        maxScore,
+        percent
       };
     });
     const questions = Regular.flattenQuestions(exam);
