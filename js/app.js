@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.98
+ * v1.5.99
  */
 
 const App = {
@@ -634,7 +634,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.98</div>
+          <div class="app-version">Build v1.5.99</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -780,7 +780,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.98</div>
+              <div class="app-version">v1.5.99</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -7313,7 +7313,11 @@ const App = {
         ensureSpace(Math.min(est, 80));
         writeSection(typeLabel[t] || t, () => {
           items.forEach(r => {
-            const promptLines = doc.splitTextToSize(this.pdfSafeText(String(r.prompt || 'Question').slice(0, 1200)), 170);
+            const promptRaw = String(r.prompt || 'Question').replace(/\r\n/g, '\n').slice(0, 1200);
+            const promptLines = [];
+            promptRaw.split(/\n+/).forEach(p => {
+              doc.splitTextToSize(this.pdfSafeText(p), 170).forEach(ln => promptLines.push(ln));
+            });
             const respEst = 12 + Math.ceil(String(r.response || '').length / 90) * 5;
             const corrEst = 12 + Math.ceil(String(r.correct || '').length / 90) * 5;
             // Keep question + response + correct together when possible
@@ -7368,24 +7372,55 @@ const App = {
         y += 4;
       });
 
-      // Special: Match
-      const matchRows = (rows || []).filter(r => (r.qType || r.q?.type) === 'match');
-      if (matchRows.length) {
+      // Special: Match — one block per match question (not repeated per pair)
+      const matchQs = [];
+      const seenMid = new Set();
+      (rows || []).forEach(r => {
+        if ((r.qType || r.q?.type) !== 'match' || !r.q) return;
+        const mid = String(r.q.id || '');
+        if (!mid || seenMid.has(mid)) return;
+        seenMid.add(mid);
+        matchQs.push(r.q);
+      });
+      if (matchQs.length) {
         ensureSpace(40);
         writeSection('Match', () => {
-          matchRows.forEach(r => {
-            const q = r.q || {};
-            const left = q.left || [];
-            const right = q.right || [];
+          matchQs.forEach(q => {
+            const left = q.left || q.columnA || [];
+            const right = q.right || q.columnB || [];
             const val = (session.answers || {})[q.id] || {};
+            const key = Array.isArray(q.correct) ? q.correct : left.map((_, i) => i);
+            ensureSpace(14);
+            doc.setFont(undefined, 'bold');
+            doc.setFontSize(10);
+            doc.setTextColor(15, 23, 42);
+            const pLines = doc.splitTextToSize(this.pdfSafeText(String(q.prompt || 'Match').slice(0, 500)), 170);
+            doc.text(pLines, 16, y);
+            y += pLines.length * 5 + 3;
+            doc.setFont(undefined, 'normal');
+            doc.setFontSize(9);
             left.forEach((a, i) => {
-              ensureSpace(8);
+              ensureSpace(10);
               const ri = val[i] != null ? val[i] : val[String(i)];
-              const b = ri != null ? right[Number(ri)] : '—';
-              doc.setFontSize(9);
+              const studB = ri != null ? right[Number(ri)] : '—';
+              const corrB = right[key[i]] != null ? right[key[i]] : '—';
+              doc.setTextColor(100);
+              doc.setFontSize(8);
+              doc.text('Your response', 16, y); y += 4;
               doc.setTextColor(15, 23, 42);
-              doc.text(this.pdfSafeText((a || ('Item '+(i+1))) + '  ->  ' + (b != null ? b : '—')), 16, y);
-              y += 6;
+              doc.setFontSize(9);
+              doc.text(this.pdfSafeText((a || ('Item '+(i+1))) + '  →  ' + (studB != null ? studB : '—')), 16, y);
+              y += 5;
+              doc.setTextColor(100);
+              doc.setFontSize(8);
+              doc.text('Correct answer', 16, y); y += 4;
+              doc.setTextColor(22, 163, 74);
+              doc.setFontSize(9);
+              doc.text(this.pdfSafeText((a || ('Item '+(i+1))) + '  →  ' + corrB), 16, y);
+              y += 7;
+              doc.setDrawColor(220, 220, 220);
+              doc.line(16, y, 190, y);
+              y += 5;
             });
             y += 4;
           });
@@ -7413,18 +7448,39 @@ const App = {
               doc.setTextColor(15, 23, 42);
               doc.setFontSize(9);
               const tmp = document.createElement('div');
-              tmp.innerHTML = t.html || pq.passageHtml || '';
-              const text = (tmp.innerText || tmp.textContent || '').trim() || '(No passage text)';
-              const lines = doc.splitTextToSize(this.pdfSafeText(text).slice(0, 2500), 178);
-              lines.forEach(line => {
-                ensureSpace(6);
-                doc.text(line, 16, y);
-                y += 4.5;
+              tmp.innerHTML = t.html || pq.passageHtml || pq.instructions || '';
+              // Preserve intentional line breaks from passage HTML
+              let text = (tmp.innerText || tmp.textContent || '').replace(/\r\n/g, '\n').trim() || '(No passage text)';
+              const paragraphs = text.split(/\n+/);
+              paragraphs.forEach(para => {
+                const lines = doc.splitTextToSize(this.pdfSafeText(para).slice(0, 2500), 178);
+                lines.forEach(line => {
+                  ensureSpace(6);
+                  doc.text(line, 16, y);
+                  y += 4.5;
+                });
+                y += 3; // paragraph gap
               });
               y += 4;
             });
+            // Passage instructions if stored on question
+            if (pq.instructions && String(pq.instructions).trim()) {
+              doc.setFont(undefined, 'italic');
+              doc.setFontSize(9);
+              doc.setTextColor(80, 80, 80);
+              String(pq.instructions).split(/\n+/).forEach(para => {
+                const lines = doc.splitTextToSize(this.pdfSafeText(para).slice(0, 1200), 178);
+                lines.forEach(line => {
+                  ensureSpace(6);
+                  doc.text(line, 16, y);
+                  y += 4.5;
+                });
+                y += 2;
+              });
+              y += 4;
+            }
             (pq.questions || []).forEach(kq => {
-              ensureSpace(20);
+              ensureSpace(24);
               const answers = session.answers || {};
               const resp = answers[kq.id] != null ? answers[kq.id] : (answers[pq.id] && answers[pq.id][kq.id]);
               doc.setFont(undefined, 'bold');
@@ -10317,7 +10373,19 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
         });
       };
     } /* resultsFilterBound */
-    const reAll = document.getElementById('btn-reeval-all');
+    let reAll = document.getElementById('btn-reeval-all');
+    if (!reAll) {
+      const xlsxBtn = document.getElementById('btn-export-xlsx');
+      if (xlsxBtn && xlsxBtn.parentElement) {
+        reAll = document.createElement('button');
+        reAll.type = 'button';
+        reAll.id = 'btn-reeval-all';
+        reAll.className = 'btn btn-primary';
+        reAll.textContent = 'Re-evaluate all scores';
+        reAll.title = 'Re-grade all students from current answer keys';
+        xlsxBtn.parentElement.insertBefore(reAll, xlsxBtn);
+      }
+    }
     if (reAll) reAll.onclick = () => this.reEvaluateAllSessions(examId);
     document.getElementById('btn-export-xlsx').onclick = () => {
       const rows = [['Name','Email','Status','Score','Max','Percent']];
