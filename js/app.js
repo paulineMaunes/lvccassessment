@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.102
+ * v1.5.103
  */
 
 const App = {
@@ -645,7 +645,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.102</div>
+          <div class="app-version">Build v1.5.103</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -812,7 +812,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.102</div>
+              <div class="app-version">v1.5.103</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -6336,23 +6336,8 @@ const App = {
       countOne(q, answers[q.id]);
     });
 
-    // Prefer stored session max (after publish / re-eval), then graded maxScore
-    const storedMax = Number(session && session.maxScore);
-    if (storedMax > 0) maxScore = storedMax;
-    if (session && session.score != null && !isNaN(Number(session.score))) {
-      // After instructor re-eval, use saved score when present
-      if (session.itemPoints || session.reEvaluatedAt) score = Number(session.score) || score;
-    }
-    // Sum of max points from grade details if maxScore still 0
-    if (!(maxScore > 0) && questions.length && window.Regular && Regular.gradeAnswers) {
-      try {
-        const g2 = Regular.gradeAnswers(questions, answers);
-        maxScore = Number(g2.maxScore) || 0;
-        if (!(score > 0)) score = Number(g2.score) || 0;
-      } catch (_) {}
-    }
-    // Fallback: sum question.points (including nested passage / wordbox / match items)
-    if (!(maxScore > 0)) {
+    // === Max points from CURRENT exam configuration (authoritative) ===
+    const sumConfigMax = () => {
       let sumPts = 0;
       const addPts = (q) => {
         if (!q) return;
@@ -6363,56 +6348,91 @@ const App = {
           q.questions.forEach(kq => { sumPts += Number(kq.points) || 1; }); return;
         }
         if (q.type === 'match') {
-          const n = (q.left || []).length || 1;
-          if (q.pointsMode === 'each' || q.pointsPerItem != null) {
+          const n = Math.max(1, (q.left || q.columnA || []).length || 0);
+          if (q.pointsMode === 'each' || (q.pointsPerItem != null && q.pointsPerItem !== '')) {
             sumPts += n * (Number(q.pointsPerItem) || Number(q.points) || 1);
           } else {
-            sumPts += Number(q.points) || n;
+            // full points for the set — if points unset, 1 per pair
+            sumPts += Number(q.points) > 0 ? Number(q.points) : n;
           }
           return;
         }
         if (q.type === 'categorize' && Array.isArray(q.items) && q.items.length) {
-          sumPts += q.items.length * (Number(q.pointsPerItem) || 1);
+          const per = Number(q.pointsPerItem);
+          if (q.pointsMode === 'each' || (per != null && !isNaN(per))) {
+            sumPts += q.items.length * (per > 0 ? per : 1);
+          } else {
+            sumPts += Number(q.points) > 0 ? Number(q.points) : q.items.length;
+          }
           return;
         }
-        sumPts += Number(q.points) || 1;
+        if (q.type === 'table' || q.type === 'tablefill') {
+          const cells = q.cells || {};
+          const blanks = Object.keys(cells).filter(k => cells[k] && cells[k].blank);
+          if (q.pointsMode === 'each' || q.pointsPerItem != null) {
+            sumPts += Math.max(1, blanks.length) * (Number(q.pointsPerItem) || 1);
+          } else {
+            sumPts += Number(q.points) > 0 ? Number(q.points) : Math.max(1, blanks.length || 1);
+          }
+          return;
+        }
+        if (q.type === 'fill' || q.type === 'fillblank') {
+          const blanks = q.blanks || (q.parts || []).filter(p => p && p.kind === 'blank');
+          if (q.pointsMode === 'each' && blanks.length) {
+            sumPts += blanks.length * (Number(q.pointsPerItem) || 1);
+          } else {
+            sumPts += Number(q.points) > 0 ? Number(q.points) : Math.max(1, blanks.length || 1);
+          }
+          return;
+        }
+        sumPts += Number(q.points) > 0 ? Number(q.points) : 1;
       };
       questions.forEach(addPts);
-      maxScore = sumPts;
+      // Prefer exam.maxScore field if set higher
+      const examMax = Number(exam && exam.maxScore);
+      if (examMax > sumPts) return examMax;
+      return sumPts;
+    };
+    const configMax = sumConfigMax();
+    // Graded max may under-count if snapshot incomplete — take the larger of config vs grade
+    if (configMax > maxScore) maxScore = configMax;
+    // Stored session max only if still higher (legacy sessions)
+    const storedMax = Number(session && session.maxScore);
+    if (storedMax > maxScore) maxScore = storedMax;
+
+    // Score: prefer re-evaluated session.score, else graded score
+    if (session && session.score != null && !isNaN(Number(session.score))) {
+      if (session.itemPoints || session.reEvaluatedAt || Number(session.score) >= 0) {
+        score = Number(session.score);
+      }
     }
 
-    // Total on summary = sum of max points (never question count alone when points exist)
+    // Total card = max points; Correct card = points earned; never exceed 100% accuracy display
     const total = maxScore > 0 ? maxScore : (totalItems || questions.length || 0);
-    let correctDisp = score;
-    if (!(session && session.itemPoints) && maxScore > 0 && Math.abs(score - correct) < 0.01) {
-      correctDisp = score;
-    } else if (!(maxScore > 0)) {
-      correctDisp = correct;
-    }
+    const correctDisp = Math.round((Number(score) || 0) * 10) / 10;
+    const remain = Math.max(0, total - correctDisp);
     let incorrectDisp = incorrect;
     let unattemptedDisp = unattempted;
-    if (maxScore > 0) {
-      // Remaining points after correct score, split roughly using item ratios when possible
-      const remain = Math.max(0, maxScore - (Number(correctDisp) || 0));
+    if (total > 0) {
       if (incorrect + unattempted > 0) {
         const ratioU = unattempted / (incorrect + unattempted);
         unattemptedDisp = Math.round(remain * ratioU * 10) / 10;
         incorrectDisp = Math.round((remain - unattemptedDisp) * 10) / 10;
       } else {
+        // No item breakdown: residual points go to incorrect (or 0 if perfect)
         incorrectDisp = remain;
         unattemptedDisp = 0;
       }
     }
-
-    const accuracy = total > 0 ? Math.round(((Number(correctDisp) || 0) / total) * 100) : 0;
+    const accuracy = total > 0 ? Math.min(100, Math.round((correctDisp / total) * 100)) : 0;
     return {
       total,
       correct: correctDisp,
       incorrect: incorrectDisp,
       unattempted: unattemptedDisp,
       accuracy,
-      score: Number(correctDisp) || score,
-      maxScore: maxScore || total,
+      score: correctDisp,
+      maxScore: total,
       totalItems
     };
   },
@@ -10050,7 +10070,29 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
             if (d && d.id != null) window._reevalAutoDetails[String(d.id)] = d;
           });
           window._reevalGradedTotal = graded.score;
-          window._reevalGradedMax = graded.maxScore;
+          // Prefer larger of graded max vs exam.maxScore / config sum
+          let mx = Number(graded.maxScore) || 0;
+          const em = Number(examData.maxScore) || 0;
+          if (em > mx) mx = em;
+          try {
+            const qs2 = qs || [];
+            let cfg = 0;
+            qs2.forEach(q => {
+              if (!q) return;
+              if ((q.type === 'passage' || q.isPassageSet) && Array.isArray(q.questions)) {
+                q.questions.forEach(nq => { cfg += Number(nq.points) || 1; });
+              } else if (q.type === 'match') {
+                const n = (q.left || []).length || 1;
+                cfg += (q.pointsMode === 'each') ? n * (Number(q.pointsPerItem) || 1) : (Number(q.points) || n);
+              } else if (q.type === 'categorize' && (q.items || []).length) {
+                cfg += (q.items || []).length * (Number(q.pointsPerItem) || 1);
+              } else {
+                cfg += Number(q.points) || 1;
+              }
+            });
+            if (cfg > mx) mx = cfg;
+          } catch (_) {}
+          window._reevalGradedMax = mx;
         } catch (e) { console.warn('auto grade preview', e); window._reevalAutoDetails = {}; }
         // Table fill blanks: one Points + Comment per blank cell
         main.querySelectorAll('.tf-result-table td.tf-blank-cell, .tf-result-table td[data-blank="1"]').forEach((td, idx) => {
@@ -10134,7 +10176,12 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
               sum += Number(inp.value) || 0;
               maxT += Number(inp.dataset.max) || 0;
             });
-            if (!maxT) maxT = Number(window._reevalGradedMax) || sum;
+            // Prefer graded/config max if sum of data-max is incomplete
+            const gradedMax = Number(window._reevalGradedMax) || 0;
+            if (gradedMax > maxT) maxT = gradedMax;
+            if (!maxT) maxT = sum;
+            sum = Math.round(sum * 10) / 10;
+            maxT = Math.round(maxT * 10) / 10;
             let badge = document.getElementById('reeval-score-badge');
             if (!badge) {
               badge = document.createElement('span');
@@ -10142,15 +10189,29 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
               badge.style.cssText = 'margin-left:0.75rem;font-weight:600';
               bar.appendChild(badge);
             }
-            const pct = maxT > 0 ? Math.round((sum / maxT) * 1000) / 10 : 0;
+            const pct = maxT > 0 ? Math.min(100, Math.round((sum / maxT) * 1000) / 10) : 0;
             badge.textContent = 'Score: ' + sum + ' / ' + maxT + ' (' + pct + '%)';
+            // Live top statistics cards (Total = max, Correct = earned)
+            const statsRow = document.querySelector('.attempt-stats');
+            if (statsRow) {
+              const vals = statsRow.querySelectorAll('.attempt-stat .val');
+              if (vals[0]) vals[0].textContent = String(maxT);
+              if (vals[1]) vals[1].textContent = String(sum);
+              if (vals[2]) vals[2].textContent = String(Math.max(0, Math.round((maxT - sum) * 10) / 10));
+              if (vals[3]) vals[3].textContent = '0';
+              if (vals[4]) vals[4].textContent = pct + '%';
+            }
           } catch (_) {}
         };
         main.querySelectorAll('.reeval-point').forEach(inp => {
           inp.addEventListener('input', refreshReevalBadge);
+          inp.addEventListener('change', refreshReevalBadge);
         });
         refreshReevalBadge();
-        document.getElementById('reeval-close').onclick = () => this.showInstructorHome();
+        document.getElementById('reeval-close').onclick = () => {
+          if (examId) this.showExamResults(examId);
+          else this.showInstructorHome();
+        };
         document.getElementById('reeval-save').onclick = async () => {
           try {
             const points = {};
@@ -10200,15 +10261,15 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
                 else incorrect++;
               });
               const unattempted = 0;
-              const acc = maxUse > 0 ? Math.round((sum / maxUse) * 1000) / 10 : percentFinal;
+              const acc = maxUse > 0 ? Math.min(100, Math.round((sum / maxUse) * 1000) / 10) : percentFinal;
               const statsRow = document.querySelector('.attempt-stats');
               if (statsRow) {
                 const vals = statsRow.querySelectorAll('.attempt-stat .val');
                 // Total | Correct | Incorrect | Unattempted | Accuracy
-                if (vals[0]) vals[0].textContent = String(totalItems || vals[0].textContent);
-                if (vals[1]) vals[1].textContent = String(correct);
-                if (vals[2]) vals[2].textContent = String(incorrect);
-                if (vals[3]) vals[3].textContent = String(unattempted);
+                if (vals[0]) vals[0].textContent = String(maxUse);
+                if (vals[1]) vals[1].textContent = String(sum);
+                if (vals[2]) vals[2].textContent = String(Math.max(0, Math.round((maxUse - sum) * 10) / 10));
+                if (vals[3]) vals[3].textContent = '0';
                 if (vals[4]) vals[4].textContent = acc + '%';
               }
               // Score badge on toolbar
