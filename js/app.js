@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.104
+ * v1.5.105
  */
 
 const App = {
@@ -702,7 +702,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.104</div>
+          <div class="app-version">Build v1.5.105</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -869,7 +869,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.104</div>
+              <div class="app-version">v1.5.105</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -10124,7 +10124,13 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
             : { details: [], score: 0, maxScore: 0 };
           window._reevalAutoDetails = {};
           (graded.details || []).forEach(d => {
-            if (d && d.id != null) window._reevalAutoDetails[String(d.id)] = d;
+            if (d && d.id != null) {
+              window._reevalAutoDetails[String(d.id)] = d;
+              if (d.itemId != null) window._reevalAutoDetails[String(d.itemId)] = d;
+              if (d.parentId != null && d.itemId != null) {
+                window._reevalAutoDetails[String(d.parentId) + '::' + String(d.itemId)] = d;
+              }
+            }
           });
           window._reevalGradedTotal = graded.score;
           // Prefer larger of graded max vs exam.maxScore / config sum
@@ -10213,9 +10219,32 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
             const corr = (corrEl && corrEl.textContent || '').trim();
             let defaultPts = 0;
             const autoD = (window._reevalAutoDetails && window._reevalAutoDetails[String(qid)]) || null;
-            if (autoD && autoD.earned != null) defaultPts = Number(autoD.earned) || 0;
-            else if (resp && corr && resp !== '—' && resp.toLowerCase() === corr.toLowerCase()) defaultPts = 1;
-            const maxPts = (autoD && autoD.max != null) ? Number(autoD.max) : 1;
+            // Also look up parent::item keys used for categorize per-item details
+            const autoItem = autoD || (window._reevalAutoDetails && (
+              window._reevalAutoDetails[String(qid)] ||
+              Object.entries(window._reevalAutoDetails || {}).find(([k]) => k.endsWith('::' + qid) || k.includes('::' + qid))?.[1]
+            )) || null;
+            const respNorm = (resp || '').replace(/→/g, '->').replace(/\s+/g, ' ').trim().toLowerCase();
+            const corrNorm = (corr || '').replace(/→/g, '->').replace(/\s+/g, ' ').trim().toLowerCase();
+            const textMatch = !!(respNorm && corrNorm && respNorm !== '—' && (
+              respNorm === corrNorm ||
+              (respNorm.includes('->') && corrNorm.includes('->') && respNorm.split('->').pop().trim() === corrNorm.split('->').pop().trim() && respNorm.split('->')[0].trim() === corrNorm.split('->')[0].trim())
+            ));
+            if (autoItem && autoItem.earned != null && autoItem.max != null && autoItem.max <= 2) {
+              // per-item detail
+              defaultPts = Number(autoItem.earned) || 0;
+            } else if (textMatch) {
+              defaultPts = 1;
+            } else if (autoD && autoD.earned != null && autoD.max != null && Number(autoD.max) <= 2) {
+              defaultPts = Number(autoD.earned) || 0;
+            } else if (resp && corr && resp !== '—' && respNorm === corrNorm) {
+              defaultPts = 1;
+            }
+            let maxPts = 1;
+            if (autoItem && autoItem.max != null && Number(autoItem.max) > 0 && Number(autoItem.max) <= 5) maxPts = Number(autoItem.max);
+            else if (autoD && autoD.max != null && Number(autoD.max) > 0 && Number(autoD.max) <= 5) maxPts = Number(autoD.max);
+            else maxPts = 1;
+            if (textMatch && defaultPts === 0) defaultPts = maxPts;
             tr.insertAdjacentHTML('beforeend',
               `<td class="reeval-td" style="white-space:nowrap"><input type="number" step="0.5" min="0" class="form-control reeval-point" data-qid="${qid}" data-max="${maxPts}" value="${defaultPts}" style="width:72px;display:inline-block"/> <span class="text-muted reeval-max">/ ${maxPts}</span></td>
                <td class="reeval-td"><input type="text" class="form-control reeval-comment" data-qid="${qid}" placeholder="Comment" style="min-width:120px"/></td>`);
@@ -10470,8 +10499,15 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
           ? Object.values(itemPoints).reduce((a, b) => a + (Number(b) || 0), 0)
           : (Number(graded.score) || 0);
         // If instructor had only manual total and no keys, keep that only when grade is zero and prior score exists and no keys graded
-        const maxScore = Number(graded.maxScore) || Number(s.maxScore) || 0;
-        const percent = maxScore > 0 ? Math.round((score / maxScore) * 1000) / 10 : 0;
+        let maxScore = Number(graded.maxScore) || 0;
+        try {
+          if (App.computeExamMaxPoints && exam) {
+            const cfg = App.computeExamMaxPoints(exam);
+            if (cfg > maxScore) maxScore = cfg;
+          }
+        } catch (_) {}
+        if (!(maxScore > 0)) maxScore = Number(s.maxScore) || 0;
+        const percent = maxScore > 0 ? Math.min(100, Math.round((score / maxScore) * 1000) / 10) : 0;
         const accuracy = percent;
         const correctCount = (graded.details || []).filter(x => x && x.ok).length;
         const incorrectCount = (graded.details || []).filter(x => x && !x.ok && !x.skipped).length;

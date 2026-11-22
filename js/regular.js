@@ -1831,7 +1831,22 @@ const Regular = {
       const r = this._gradeOne(q, answers[q.id]);
       score += r.earned;
       maxScore += r.max;
-      details.push({ id: q.id, earned: r.earned, max: r.max, correct: r.ok });
+      details.push({ id: q.id, earned: r.earned, max: r.max, correct: r.ok, ok: r.ok });
+      // Per-item details for categorize (and match) so re-eval rows can score each line
+      if (q.type === 'categorize' && Array.isArray(r.itemResults)) {
+        const per = Number(r.per) || (r.max && r.itemResults.length ? r.max / r.itemResults.length : 1);
+        r.itemResults.forEach((ir) => {
+          details.push({
+            id: String(q.id) + '::' + String(ir.id),
+            parentId: q.id,
+            itemId: ir.id,
+            earned: ir.ok ? per : 0,
+            max: per,
+            correct: !!ir.ok,
+            ok: !!ir.ok
+          });
+        });
+      }
     });
     return { score, maxScore, details };
   },
@@ -1942,30 +1957,47 @@ const Regular = {
     // Categorize: 1 point per correct item by default (or pointsPerItem)
     if (q.type === 'categorize') {
       const items = q.items || [];
+      const cats = q.categories || [];
       if (!items.length) return { earned: 0, max: pts, ok: false };
-      const ans = (resp && typeof resp === 'object') ? resp : {};
+      const ans = (resp && typeof resp === 'object' && !Array.isArray(resp)) ? resp : {};
+      const resolveCat = (v) => {
+        if (v == null || v === '') return null;
+        const byId = cats.find(c => String(c.id) === String(v));
+        if (byId) return { id: String(byId.id), name: this.normAns(byId.name || byId.label || '') };
+        const byName = cats.find(c => this.normAns(c.name || c.label) === this.normAns(v));
+        if (byName) return { id: String(byName.id), name: this.normAns(byName.name || byName.label || '') };
+        return { id: String(v), name: this.normAns(v) };
+      };
+      const catEqual = (student, expected) => {
+        if (student == null || expected == null || student === '' || expected === '') return false;
+        if (String(student) === String(expected)) return true;
+        if (this.normAns(student) === this.normAns(expected)) return true;
+        const s = resolveCat(student);
+        const e = resolveCat(expected);
+        if (!s || !e) return false;
+        return (s.id && e.id && s.id === e.id) || (s.name && e.name && s.name === e.name);
+      };
       let right = 0;
-      items.forEach(it => {
-        const studentCat = ans[it.id] ?? ans[it.name];
-        const expected = it.category ?? it.categoryId ?? it.answer ?? it.catId;
-        if (studentCat != null && expected != null && String(studentCat) === String(expected)) right++;
-        else if (studentCat != null && expected != null && this.normAns(studentCat) === this.normAns(expected)) right++;
+      const itemResults = [];
+      items.forEach((it, idx) => {
+        const studentCat = ans[it.id] ?? ans[it.name] ?? ans[it.label] ?? ans[String(idx)] ?? ans[String(it.id)];
+        const expected = it.category ?? it.categoryId ?? it.answer ?? it.catId ?? it.correct;
+        const okItem = catEqual(studentCat, expected);
+        if (okItem) right++;
+        itemResults.push({ id: String(it.id || it.name || idx), ok: okItem, student: studentCat, expected });
       });
       const n = items.length;
       let per = Number(q.pointsPerItem);
       if (!(per > 0)) {
-        // derive from total points if instructor set total for all items
         if (Number(q.points) > 0 && n > 0 && q.pointsMode === 'all') per = Number(q.points) / n;
         else per = 1;
       }
-      // Default behavior: points per correct item (6 items → 6 max)
       if (q.pointsMode === 'all') {
         const maxPts = Number(q.points) > 0 ? Number(q.points) : n * per;
-        return { earned: right === n ? maxPts : 0, max: maxPts, ok: right === n };
+        return { earned: right === n ? maxPts : 0, max: maxPts, ok: right === n, itemResults, per };
       }
-      // pointsMode 'each' (default) or pointsPerItem set
       const max = n * per;
-      return { earned: right * per, max, ok: right === n };
+      return { earned: right * per, max, ok: right === n, itemResults, per };
     }
 
     // Match: default 1 point per correct pair (8 pairs → 8 points)
