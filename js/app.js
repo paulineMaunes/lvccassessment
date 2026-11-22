@@ -1,6 +1,6 @@
 /**
  * LVCC Assessment Portal — Main App
- * v1.5.95
+ * v1.5.98
  */
 
 const App = {
@@ -634,7 +634,7 @@ const App = {
         </p>
         <div id="login-error" class="hidden login-error"></div>
         <div class="mt-2" style="text-align:center">${Theme.buttonHtml()}
-          <div class="app-version">Build v1.5.95</div>
+          <div class="app-version">Build v1.5.98</div>
         </div>
       </div>`;
     document.getElementById('google-signin').onclick = async () => {
@@ -780,7 +780,7 @@ const App = {
             </button>
             <div class="brand-text">
               <div class="logo-text">LVCC Assessment Portal</div>
-              <div class="app-version">v1.5.95</div>
+              <div class="app-version">v1.5.98</div>
             </div>
           </div>
           <nav class="sidebar-nav">${navItems}</nav>
@@ -7036,12 +7036,12 @@ const App = {
           });
           (pq.questions || []).forEach(kq => {
             const resp = answers[kq.id] != null ? answers[kq.id] : (answers[pq.id] && answers[pq.id][kq.id]);
-            html += `<div class="passage-result-q">
+            html += `<div class="passage-result-q" data-result-qid="${esc(String(kq.id||''))}" data-qtype="${esc(String(kq.type||''))}">
               <div><strong>${esc(kq.prompt || 'Question')}</strong></div>
               <div class="text-muted" style="font-size:0.85rem">Your response</div>
-              <div>${esc(this.formatAnswerDisplay(kq, resp, false))}</div>
+              <div class="hist-value hist-ans">${esc(this.formatAnswerDisplay(kq, resp, false))}</div>
               <div class="text-muted" style="font-size:0.85rem">Correct answer</div>
-              <div style="color:var(--success,#16a34a)">${esc(this.formatAnswerDisplay(kq, null, true))}</div>
+              <div class="hist-value" style="color:var(--success,#16a34a)">${esc(this.formatAnswerDisplay(kq, null, true))}</div>
             </div>`;
           });
           html += `</div>`;
@@ -7192,33 +7192,36 @@ const App = {
       const canvas = await h2c(clone, { scale: 1.5, useCORS: true, backgroundColor: '#ffffff', logging: false });
       clone.remove();
       const doc = new JsPDF({ unit: 'mm', format: 'a4' });
-      const pageW = 210, pageH = 297, margin = 10;
+      const pageW = 210, pageH = 297, margin = 10, headerH = 18;
       const imgW = pageW - margin * 2;
-      const imgH = (canvas.height * imgW) / canvas.width;
-      const pageContentH = pageH - margin * 2;
-      let heightLeft = imgH;
-      let y = margin;
-      const imgData = canvas.toDataURL('image/jpeg', 0.92);
-      // Header on first page
-      doc.setFillColor(11, 18, 32);
-      doc.rect(0, 0, 210, 18, 'F');
-      doc.setTextColor(255, 255, 255);
-      doc.setFontSize(12);
-      doc.text('ASSESSMENT RESULTS', 14, 12);
-      y = 22;
-      let position = y;
-      doc.addImage(imgData, 'JPEG', margin, position, imgW, imgH);
-      heightLeft -= (pageH - position - margin);
-      while (heightLeft > 0) {
-        position = heightLeft - imgH + margin;
-        doc.addPage();
+      const scale = imgW / canvas.width; // mm per px
+      const contentH = pageH - headerH - margin; // usable height below header (mm)
+      const slicePx = Math.max(1, Math.floor(contentH / scale)); // source pixels per page
+      let srcY = 0;
+      let page = 0;
+      while (srcY < canvas.height) {
+        const sliceH = Math.min(slicePx, canvas.height - srcY);
+        const pageCanvas = document.createElement('canvas');
+        pageCanvas.width = canvas.width;
+        pageCanvas.height = sliceH;
+        const ctx = pageCanvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+        ctx.drawImage(canvas, 0, srcY, canvas.width, sliceH, 0, 0, canvas.width, sliceH);
+        const sliceData = pageCanvas.toDataURL('image/jpeg', 0.92);
+        const sliceHmm = sliceH * scale;
+        if (page > 0) doc.addPage();
+        // Header band — never overlaps content
         doc.setFillColor(11, 18, 32);
-        doc.rect(0, 0, 210, 18, 'F');
+        doc.rect(0, 0, 210, headerH, 'F');
         doc.setTextColor(255, 255, 255);
-        doc.setFontSize(11);
-        doc.text('ASSESSMENT RESULTS (cont.)', 14, 12);
-        doc.addImage(imgData, 'JPEG', margin, 22 + (position - margin), imgW, imgH);
-        heightLeft -= (pageH - 22 - margin);
+        doc.setFontSize(page === 0 ? 12 : 11);
+        doc.text(page === 0 ? 'ASSESSMENT RESULTS' : 'ASSESSMENT RESULTS (cont.)', 14, 12);
+        doc.addImage(sliceData, 'JPEG', margin, headerH + 2, imgW, sliceHmm);
+        srcY += sliceH;
+        page++;
+        // safety
+        if (page > 40) break;
       }
       doc.save(fname);
       return true;
@@ -7239,14 +7242,15 @@ const App = {
       const doc = new JsPDF({ unit: 'mm', format: 'a4' });
       const pageH = 297;
       const ensureSpace = (need) => {
-        if (y + need > pageH - 14) {
+        // Keep whole block together; never draw under the header band
+        if (y + need > pageH - 16) {
           doc.addPage();
           doc.setFillColor(11, 18, 32);
           doc.rect(0, 0, 210, 18, 'F');
           doc.setTextColor(255, 255, 255);
           doc.setFontSize(11);
           doc.text('ASSESSMENT RESULTS (cont.)', 14, 12);
-          y = 26;
+          y = 28; // clear of header
         }
       };
       doc.setFillColor(11, 18, 32);
@@ -9870,15 +9874,32 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
   async reEvaluateSession(sessionId, examId) {
     try {
       await this.showStudentAttempt(sessionId);
-      setTimeout(() => {
+      setTimeout(async () => {
         const root = document.getElementById('app') || document.querySelector('.main-content');
         if (!root) return;
         if (root.querySelector('.reeval-toolbar')) return;
         const bar = document.createElement('div');
         bar.className = 'reeval-toolbar';
-        bar.innerHTML = '<strong>Re-evaluate mode</strong><span class="text-muted">Edit Points per question, then Save</span><button type="button" class="btn btn-primary" id="reeval-save">Save scores</button><button type="button" class="btn btn-ghost" id="reeval-close">Close</button>';
+        bar.innerHTML = '<strong>Re-evaluate mode</strong><span class="text-muted">Auto-scored from answer keys where available — edit Points, then Save</span><button type="button" class="btn btn-primary" id="reeval-save">Save scores</button><button type="button" class="btn btn-ghost" id="reeval-close">Close</button>';
         const main = document.querySelector('.main-content') || root;
         main.insertBefore(bar, main.firstChild);
+        // Realtime auto-score from current assessment configuration (incl. passage open-ended)
+        try {
+          const examSnap = await window.db.collection('exams').doc(examId).get();
+          const examData = examSnap.exists ? examSnap.data() : {};
+          const sessSnap = await window.db.collection('sessions').doc(sessionId).get();
+          const sessData = sessSnap.exists ? sessSnap.data() : {};
+          const qs = (window.Regular && Regular.flattenQuestions) ? Regular.flattenQuestions(examData) : [];
+          const graded = (window.Regular && Regular.gradeAnswers)
+            ? Regular.gradeAnswers(qs, sessData.answers || {})
+            : { details: [], score: 0, maxScore: 0 };
+          window._reevalAutoDetails = {};
+          (graded.details || []).forEach(d => {
+            if (d && d.id != null) window._reevalAutoDetails[String(d.id)] = d;
+          });
+          window._reevalGradedTotal = graded.score;
+          window._reevalGradedMax = graded.maxScore;
+        } catch (e) { console.warn('auto grade preview', e); window._reevalAutoDetails = {}; }
         // Table fill blanks: one Points + Comment per blank cell
         main.querySelectorAll('.tf-result-table td.tf-blank-cell, .tf-result-table td[data-blank="1"]').forEach((td, idx) => {
           if (td.querySelector('.reeval-point')) return;
@@ -9910,6 +9931,21 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
           next.after(wrap);
         });
 
+        // Passage / open-ended cards: points from auto-grade
+        main.querySelectorAll('.passage-result-q').forEach((card, idx) => {
+          if (card.querySelector('.reeval-point')) return;
+          const qid = card.getAttribute('data-result-qid') || ('pq' + idx);
+          const autoD = (window._reevalAutoDetails && window._reevalAutoDetails[String(qid)]) || null;
+          let defaultPts = autoD && autoD.earned != null ? Number(autoD.earned) : 0;
+          const badge = autoD && autoD.autoGraded
+            ? `<span class="text-muted" style="font-size:0.75rem">${autoD.ok ? 'Auto: correct' : 'Auto: incorrect'} (editable)</span>`
+            : `<span class="text-muted" style="font-size:0.75rem">Manual / re-evaluate</span>`;
+          const wrap = document.createElement('div');
+          wrap.style.cssText = 'margin-top:0.5rem;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center';
+          wrap.innerHTML = `${badge}<label style="font-size:0.8rem">Pts <input type="number" step="0.5" class="form-control reeval-point" data-qid="${qid}" value="${defaultPts}" style="width:72px;display:inline-block"/></label>
+            <input type="text" class="form-control reeval-comment" data-qid="${qid}" placeholder="Comment" style="min-width:120px;flex:1"/>`;
+          card.appendChild(wrap);
+        });
         // Inject Points + Comment columns into result tables
         main.querySelectorAll('table.result-equal-cols').forEach(tbl => {
           const thead = tbl.querySelector('thead tr');
@@ -9924,7 +9960,9 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
             const resp = (respEl && respEl.textContent || '').trim();
             const corr = (corrEl && corrEl.textContent || '').trim();
             let defaultPts = 0;
-            if (resp && corr && resp !== '—' && resp.toLowerCase() === corr.toLowerCase()) defaultPts = 1;
+            const autoD = (window._reevalAutoDetails && window._reevalAutoDetails[String(qid)]) || null;
+            if (autoD && autoD.earned != null) defaultPts = Number(autoD.earned) || 0;
+            else if (resp && corr && resp !== '—' && resp.toLowerCase() === corr.toLowerCase()) defaultPts = 1;
             tr.insertAdjacentHTML('beforeend',
               `<td class="reeval-td"><input type="number" step="0.5" class="form-control reeval-point" data-qid="${qid}" value="${defaultPts}" style="width:72px"/></td>
                <td class="reeval-td"><input type="text" class="form-control reeval-comment" data-qid="${qid}" placeholder="Comment" style="min-width:120px"/></td>`);
@@ -9954,9 +9992,13 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
             main.querySelectorAll('.reeval-comment').forEach(inp => {
               if (inp.dataset.qid && inp.value) comments[inp.dataset.qid] = inp.value;
             });
+            const maxUse = Number(window._reevalGradedMax) || max;
+            const percentFinal = maxUse > 0 ? Math.round((sum / maxUse) * 1000) / 10 : percent;
             await window.db.collection('sessions').doc(sessionId).update({
               score: sum,
-              percent,
+              maxScore: maxUse,
+              percent: percentFinal,
+              accuracy: percentFinal,
               itemPoints: points,
               itemComments: comments,
               reEvaluatedAt: firebase.firestore.FieldValue.serverTimestamp(),
@@ -9970,6 +10012,12 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
               }, { merge: true });
             } catch (_) {}
             await UI.alert('Scores saved. Student will see the updated result.', 'Saved');
+            // Reflect on results statistics if results page is open
+            try {
+              if (examId && document.getElementById('results-stats')) {
+                await App.showExamResults(examId);
+              }
+            } catch (_) {}
           } catch (err) {
             await UI.alert(err.message || String(err), 'Error');
           }
@@ -10027,6 +10075,81 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
     await UI.alert(`Saved ${score}/${maxScore} (${percent}%)`, 'Graded');
   },
 
+
+  async reEvaluateAllSessions(examId) {
+    const ok = await UI.confirm(
+      'Re-grade ALL student attempts using the current assessment answer keys? Manual point overrides on individual items may be replaced by auto scores where keys exist. Essay/open-ended items are scored only when a correct/suggested answer is configured.',
+      'Re-evaluate all scores'
+    );
+    if (!ok) return;
+    try {
+      UI.showLoading('Re-evaluating all scores…');
+      const exam = await Exam.getExam(examId);
+      if (!exam) throw new Error('Assessment not found');
+      const questions = (window.Regular && Regular.flattenQuestions) ? Regular.flattenQuestions(exam) : [];
+      const snap = await window.db.collection('sessions').where('examId', '==', examId).get();
+      let n = 0, skipped = 0;
+      for (const d of snap.docs) {
+        const s = d.data() || {};
+        if (s.isMock || String(d.id).startsWith('test_')) { skipped++; continue; }
+        if (String(s.status) === 'superseded') { skipped++; continue; }
+        const answers = s.answers || {};
+        let graded = { score: 0, maxScore: 0, details: [] };
+        try {
+          if (window.Regular && Regular.gradeAnswers) graded = Regular.gradeAnswers(questions, answers);
+        } catch (e) { console.warn('grade', d.id, e); }
+        // Preserve manual itemPoints only for items that were skipped (no key) if present
+        const itemPoints = {};
+        (graded.details || []).forEach(det => {
+          if (!det || det.id == null) return;
+          if (det.skipped && s.itemPoints && s.itemPoints[det.id] != null) {
+            itemPoints[det.id] = Number(s.itemPoints[det.id]) || 0;
+          } else {
+            itemPoints[det.id] = Number(det.earned) || 0;
+          }
+        });
+        let score = Object.keys(itemPoints).length
+          ? Object.values(itemPoints).reduce((a, b) => a + (Number(b) || 0), 0)
+          : (graded.score || 0);
+        const maxScore = graded.maxScore || s.maxScore || 0;
+        const percent = maxScore > 0 ? Math.round((score / maxScore) * 1000) / 10 : 0;
+        const accuracy = percent;
+        await window.db.collection('sessions').doc(d.id).update({
+          score,
+          maxScore,
+          percent,
+          accuracy,
+          itemPoints,
+          correctCount: (graded.details || []).filter(x => x && x.ok).length,
+          totalQuestions: (graded.details || []).length || s.totalQuestions || 0,
+          reEvaluatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          reEvaluatedBy: Auth.currentUser && Auth.currentUser.uid,
+          reEvaluateSource: 'bulk-config'
+        });
+        try {
+          await window.db.collection('grades').doc(d.id).set({
+            sessionId: d.id,
+            examId,
+            score,
+            maxScore,
+            percent,
+            itemPoints,
+            method: 'auto-reeval',
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+          }, { merge: true });
+        } catch (_) {}
+        n++;
+      }
+      try { UI.hideLoading(); } catch (_) {}
+      await UI.alert('Re-evaluated ' + n + ' attempt(s)' + (skipped ? (' · skipped ' + skipped) : '') + '.', 'Done');
+      await this.showExamResults(examId);
+    } catch (e) {
+      try { UI.hideLoading(); } catch (_) {}
+      console.error(e);
+      await UI.alert(e.message || String(e), 'Re-evaluate all');
+    }
+  },
+
   async showExamResults(examId) {
     try { UI.showLoading('Loading results…'); } catch (_) {}
     let exam;
@@ -10046,6 +10169,7 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
       <div class="card-header page-header-responsive">
         <h2 class="page-title">Results — ${escapeHtml(exam.title || 'Assessment')}</h2>
         <div class="action-btns">
+          <button class="btn btn-primary" id="btn-reeval-all" title="Re-grade all students from current answer keys">Re-evaluate all scores</button>
           <button class="btn btn-ghost" id="btn-export-xlsx">Export Excel</button>
           <button class="btn btn-ghost" onclick="App.showInstructorHome()">Back</button>
         </div>
@@ -10193,6 +10317,8 @@ if (!isTestSession && session.lockedUntilAdmit && !session.instructorAdmitted) {
         });
       };
     } /* resultsFilterBound */
+    const reAll = document.getElementById('btn-reeval-all');
+    if (reAll) reAll.onclick = () => this.reEvaluateAllSessions(examId);
     document.getElementById('btn-export-xlsx').onclick = () => {
       const rows = [['Name','Email','Status','Score','Max','Percent']];
       sessions.forEach(s => {

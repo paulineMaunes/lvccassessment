@@ -1776,8 +1776,14 @@ const Regular = {
     const list = [];
     if (Array.isArray(correct)) correct.forEach(c => list.push(c));
     else if (correct != null && correct !== '') list.push(correct);
-    (alternatives || []).forEach(a => list.push(a));
-    return list.some(c => this.normAns(c) === s);
+    (alternatives || []).forEach(a => {
+      if (Array.isArray(a)) a.forEach(x => list.push(x));
+      else list.push(a);
+    });
+    return list.some(c => {
+      const n = this.normAns(c);
+      return n && (n === s || n.replace(/\s+/g, ' ') === s.replace(/\s+/g, ' '));
+    });
   },
 
   /**
@@ -1829,12 +1835,16 @@ const Regular = {
     const empty = resp === undefined || resp === null || resp === '' ||
       (Array.isArray(resp) && !resp.length) ||
       (typeof resp === 'object' && !Array.isArray(resp) && !Object.keys(resp).length);
-    if (q.type === 'essay' || q.type === 'open' || q.type === 'openended') {
-      // Auto-grade when a correct/suggested answer is set (case-insensitive); otherwise manual
-      const hasKey = (q.correct != null && String(q.correct).trim() !== '') || (q.alternatives && q.alternatives.length);
-      if (!hasKey) return { earned: 0, max: pts, ok: false, skipped: true };
-      const ok = this.matchesCorrect(resp, q.correct, q.alternatives);
-      return { earned: ok ? pts : 0, max: pts, ok, manual: true };
+    if (q.type === 'essay' || q.type === 'open' || q.type === 'openended' || q.type === 'open_ended') {
+      // Auto-grade when correct / suggested answer or alternatives exist (case-insensitive)
+      const alts = q.alternatives || q.alternateAnswers || q.alternates || [];
+      const hasKey = (q.correct != null && String(q.correct).trim() !== '')
+        || (q.suggestedAnswer != null && String(q.suggestedAnswer).trim() !== '')
+        || (Array.isArray(alts) && alts.some(a => a != null && String(a).trim() !== ''));
+      if (!hasKey) return { earned: 0, max: pts, ok: false, skipped: true, manual: true };
+      const key = (q.correct != null && String(q.correct).trim() !== '') ? q.correct : q.suggestedAnswer;
+      const ok = this.matchesCorrect(resp, key, alts);
+      return { earned: ok ? pts : 0, max: pts, ok, autoGraded: true, manual: true };
     }
     if (empty) return { earned: 0, max: pts, ok: false };
 

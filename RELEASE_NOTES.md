@@ -783,3 +783,9 @@ If features seem missing, replace **all** app files from the zip (not only one J
 ## v1.5.95
 - Live dashboard: no page scroll; middle grid scrolls to show all student cards; right panel full height (integrity + messages each scroll)
 - Message popup: student/instructor avatars beside name; thread oldest → newest
+
+## v1.5.98
+- Passage open-ended / essay: auto-score when correct or suggested answer is configured; instructor can still re-evaluate points
+- Results: **Re-evaluate all scores** re-grades every attempt from current assessment answer keys
+- Single student re-evaluate save refreshes results statistics at top of summary
+- Export PDF: fixed multi-page image split so questions are not cut by the dark header bar; structured PDF keeps blocks off the header
