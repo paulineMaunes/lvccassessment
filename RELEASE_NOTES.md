@@ -806,3 +806,7 @@ If features seem missing, replace **all** app files from the zip (not only one J
 - Results: sort by last name (default), first name, or score
 - View summary & Re-evaluate open in a new tab
 - Re-evaluate: each Points field shows max e.g. `1 / 3`; live score badge; Save updates top Total/Correct/Incorrect/Accuracy stats
+
+## v1.5.102
+- Summary / re-evaluate: **Total** = sum of max points (matches Score X / Y denominator)
+- Match on summary / re-evaluate: column layout (Question | Your Response | Correct Answer) — no connecting lines
